@@ -1,0 +1,2426 @@
+package "caddy" {
+    features = {
+        dns = {
+            description = "Starts local CoreDNS for the configured domain and adds /dns/healthz resolved through CoreDNS."
+        }
+        tls = {
+            description = "Enables internal TLS certificates (local_certs) and HTTPS listeners for sites."
+        }
+        trust = {
+            description = "Allows Caddy to install its local Root CA into the system trust store."
+        }
+        admin = {
+            description = "Enables the Caddy administration API endpoint on 127.0.0.1:<admin_port>."
+        }
+        metrics = {
+            description = "Enables global Prometheus and OpenTelemetry metrics collection and exposes /metrics."
+        }
+        debug = {
+            description = "Enables global debug logging mode."
+        }
+        log = {
+            description = "Enables structured access logging across all configured sites."
+        }
+        watch = {
+            description = "Watches the generated Caddyfile for changes and reloads automatically (--watch)."
+        }
+        encode = {
+            description = "Enables zstd and gzip response compression across all configured sites."
+        }
+    }
+
+    outputs = {
+        domain = {
+            description = "Base domain suffix configured for Caddy sites."
+            type        = string
+            value       = inputs.domain
+        }
+        http_port = {
+            description = "HTTP port Caddy listens on."
+            type        = number
+            value       = component.caddy.service.go.caddy.vars.http
+        }
+        https_port = {
+            description = "HTTPS port Caddy listens on."
+            type        = number
+            value       = component.caddy.service.go.caddy.vars.https
+        }
+        admin_port = {
+            description = "Port for the Caddy administration API endpoint."
+            type        = number
+            value       = component.caddy.service.go.caddy.vars.admin
+        }
+        url = {
+            description = "Base loopback URL where Caddy serves HTTP."
+            type        = string
+            value       = "http://127.0.0.1:${component.caddy.service.go.caddy.vars.http}"
+        }
+        http_url = {
+            description = "HTTP URL for the base domain."
+            type        = string
+            value       = "http://${inputs.domain}:${component.caddy.service.go.caddy.vars.http}"
+        }
+        https_url = {
+            description = "HTTPS URL for the base domain."
+            type        = string
+            value       = "https://${inputs.domain}:${component.caddy.service.go.caddy.vars.https}"
+        }
+        admin_url = {
+            description = "HTTP URL of the Caddy administration API endpoint."
+            type        = string
+            value       = "http://127.0.0.1:${component.caddy.service.go.caddy.vars.admin}"
+        }
+        health_url = {
+            description = "HTTP URL of the Caddy readiness endpoint."
+            type        = string
+            value       = "http://127.0.0.1:${component.caddy.service.go.caddy.vars.http}${inputs.health_path}"
+        }
+        caddyfile = {
+            description = "Filesystem path to the generated Caddyfile."
+            type        = string
+            value       = component.caddy.service.go.caddy.file.caddyfile.path
+        }
+        ready = {
+            description = "Readiness barrier reference for the Caddy service."
+            type        = string
+            value       = component.caddy.service.go.caddy.runtime.ready
+        }
+    }
+
+    import "github.com/zordon-io/zordon-modules/coredns" {
+        enabled = features.dns
+        inputs = {
+            zone     = inputs.domain
+            dns_port = inputs.dns_port
+            hosts    = inputs.dns_hosts
+            records  = inputs.dns_records
+            forwards = inputs.dns_forwards
+        }
+    }
+
+    inputs = {
+        # =====================================================================
+        # CLI Flags (caddy run)
+        # =====================================================================
+        adapter = {
+            type        = string
+            default     = "caddyfile"
+            description = "Configuration adapter name passed to caddy run --adapter"
+        }
+        environ = {
+            type        = bool
+            default     = false
+            description = "Print process environment before starting (--environ)"
+        }
+        resume = {
+            type        = bool
+            default     = false
+            description = "Prefer saved autosave config over --config file (--resume)"
+        }
+        watch = {
+            type        = bool
+            default     = false
+            description = "Watch config file and reload automatically on change (--watch)"
+        }
+        pidfile = {
+            type        = string
+            default     = ""
+            description = "Path of file to write process ID (--pidfile)"
+        }
+        pingback = {
+            type        = string
+            default     = ""
+            description = "Address to echo confirmation bytes to on startup (--pingback)"
+        }
+
+        # =====================================================================
+        # Core Listener, Readiness & DNS Integration
+        # =====================================================================
+        domain = {
+            type        = string
+            default     = "test"
+            description = "Base domain suffix for site hostnames (<site>.<domain>)"
+        }
+        http_port = {
+            type        = number
+            default     = null
+            description = "Global HTTP port (http_port); null picks a free port automatically."
+        }
+        https_port = {
+            type        = number
+            default     = null
+            description = "Global HTTPS port (https_port); null picks a free port automatically."
+        }
+        admin_port = {
+            type        = number
+            default     = null
+            description = "Port for the Caddy admin API listener; null picks a free port automatically."
+        }
+        health_path = {
+            type        = string
+            default     = "/healthz"
+            description = "HTTP path served on health_port for readiness probes"
+        }
+        dns_port = {
+            type        = number
+            default     = null
+            description = "Optional DNS port override forwarded to the coredns module"
+        }
+        dns_hosts = {
+            type = map(object({
+                ip        = string
+                hostnames = optional(list(string), [])
+            }))
+            default     = {}
+            description = "Additional static DNS host mappings forwarded to the coredns module"
+        }
+        dns_records = {
+            type = map(object({
+                name  = string
+                type  = optional(string, "A")
+                class = optional(string, "IN")
+                ttl   = optional(number, 60)
+                data  = string
+            }))
+            default     = {}
+            description = "Additional DNS resource records forwarded to the coredns module"
+        }
+        dns_forwards = {
+            type = map(object({
+                from                             = optional(string, ".")
+                to                               = list(string)
+                except                           = optional(list(string), [])
+                force_tcp                        = optional(bool, false)
+                prefer_udp                       = optional(bool, false)
+                expire                           = optional(string, "")
+                max_fails                        = optional(number)
+                tls_cert                         = optional(string, "")
+                tls_key                          = optional(string, "")
+                tls_ca                           = optional(string, "")
+                tls_servername                   = optional(string, "")
+                policy                           = optional(string, "")
+                health_check                     = optional(string, "")
+                health_check_domain              = optional(string, "")
+                dnstap                           = optional(bool, false)
+                max_concurrent                   = optional(number)
+                next                             = optional(list(string), [])
+                failfast_all_unhealthy_upstreams = optional(bool, false)
+                failovers                        = optional(list(string), [])
+            }))
+            default     = {}
+            description = "Upstream DNS forwarders forwarded to the coredns module"
+        }
+
+        # =====================================================================
+        # Caddyfile Global Options Block ({ ... })
+        # =====================================================================
+        debug = {
+            type        = bool
+            default     = false
+            description = "Enable debug mode in the global options block"
+        }
+        default_bind = {
+            type = object({
+                addresses = optional(list(string), ["127.0.0.1"])
+                protocols = optional(list(string), [])
+            })
+            default     = null
+            description = "Default bind addresses and protocols for all servers (default_bind)"
+        }
+        grace_period = {
+            type        = string
+            default     = ""
+            description = "Duration of graceful shutdown period (grace_period)"
+        }
+        shutdown_delay = {
+            type        = string
+            default     = ""
+            description = "Duration to delay before beginning shutdown (shutdown_delay)"
+        }
+        default_sni = {
+            type        = string
+            default     = ""
+            description = "Default ServerName when client does not use SNI (default_sni)"
+        }
+        fallback_sni = {
+            type        = string
+            default     = ""
+            description = "Fallback ServerName when SNI does not match any certificate (fallback_sni)"
+        }
+        order = {
+            type = list(object({
+                directive = string
+                position  = string
+                target    = optional(string, "")
+            }))
+            default     = []
+            description = "Custom HTTP handler directive ordering rules (order <dir> first|last|before|after [<target>])"
+        }
+        storage_root = {
+            type        = string
+            default     = ""
+            description = "Root directory for file_system storage (defaults to Zordon service var directory)"
+        }
+        storage_check = {
+            type        = string
+            default     = ""
+            description = "Set to 'off' to disable storage permission checks (storage_check)"
+        }
+        storage_clean_interval = {
+            type        = string
+            default     = ""
+            description = "How often to scan storage for expired assets, or 'off' (storage_clean_interval)"
+        }
+        renew_interval = {
+            type        = string
+            default     = ""
+            description = "How often to scan certificates for renewal (renew_interval)"
+        }
+        ocsp_interval = {
+            type        = string
+            default     = ""
+            description = "How often to check OCSP staples for updates (ocsp_interval)"
+        }
+        acme_ca = {
+            type        = string
+            default     = ""
+            description = "ACME directory endpoint URL (acme_ca)"
+        }
+        acme_ca_root = {
+            type        = string
+            default     = ""
+            description = "PEM file containing trusted root CA for ACME endpoint (acme_ca_root)"
+        }
+        acme_eab = {
+            type = object({
+                key_id  = string
+                mac_key = string
+            })
+            default     = null
+            description = "External Account Binding credentials for ACME (acme_eab)"
+        }
+        skip_install_trust = {
+            type        = bool
+            default     = true
+            description = "Skip installing local CA root certificates into system trust store (skip_install_trust)"
+        }
+        email = {
+            type        = string
+            default     = ""
+            description = "Email address for ACME account registration (email)"
+        }
+        admin = {
+            type = object({
+                enabled        = optional(bool, true)
+                listen         = optional(string, "")
+                enforce_origin = optional(bool, false)
+                origins        = optional(list(string), [])
+            })
+            default     = null
+            description = "Global admin API configuration (admin)"
+        }
+        on_demand_tls = {
+            type = object({
+                ask               = optional(string, "")
+                permission_module = optional(string, "")
+            })
+            default     = null
+            description = "Global On-Demand TLS configuration (on_demand_tls)"
+        }
+        local_certs = {
+            type        = bool
+            default     = false
+            description = "Use internal CA for all managed certificates by default (local_certs)"
+        }
+        key_type = {
+            type        = string
+            default     = ""
+            description = "Default key type for TLS certificates: ed25519, p256, p384, rsa2048, rsa4096 (key_type)"
+        }
+        auto_https = {
+            type        = list(string)
+            default     = []
+            description = "Auto-HTTPS options: off, disable_redirects, disable_certs, ignore_loaded_certs (auto_https)"
+        }
+        metrics = {
+            type = object({
+                enabled                = optional(bool, true)
+                per_host               = optional(bool, false)
+                observe_catchall_hosts = optional(bool, false)
+                otlp                   = optional(bool, false)
+                path                   = optional(string, "/metrics")
+                disable_openmetrics    = optional(bool, false)
+            })
+            default     = null
+            description = "Global metrics configuration and health-server metrics endpoint"
+        }
+        servers_options = {
+            type = list(object({
+                listener_address                = optional(string, "")
+                name                            = optional(string, "")
+                read_body                       = optional(string, "")
+                read_body_idle                  = optional(string, "")
+                read_header                     = optional(string, "")
+                write                           = optional(string, "")
+                write_idle                      = optional(string, "")
+                write_max_chunk                 = optional(string, "")
+                idle                            = optional(string, "")
+                keepalive_interval              = optional(string, "")
+                keepalive_idle                  = optional(string, "")
+                keepalive_count                 = optional(number)
+                max_header_size                 = optional(string, "")
+                enable_full_duplex              = optional(bool, false)
+                expected_underscore_headers     = optional(list(string), [])
+                expected_dot_headers            = optional(list(string), [])
+                log_credentials                 = optional(bool, false)
+                protocols                       = optional(list(string), [])
+                strict_sni_host                 = optional(bool)
+                trusted_proxies                 = optional(list(string), [])
+                trusted_proxies_private_ranges  = optional(bool, false)
+                trusted_proxies_strict          = optional(bool, false)
+                trusted_proxies_unix            = optional(bool, false)
+                client_ip_headers               = optional(list(string), [])
+                trace                           = optional(bool, false)
+                allow_0rtt                      = optional(bool)
+                listener_wrappers               = optional(list(string), [])
+                packet_conn_wrappers            = optional(list(string), [])
+            }))
+            default     = []
+            description = "Global HTTP server listener overrides (servers)"
+        }
+        ocsp_stapling_off = {
+            type        = bool
+            default     = false
+            description = "Disable OCSP stapling globally (ocsp_stapling off)"
+        }
+        cert_lifetime = {
+            type        = string
+            default     = ""
+            description = "Default ACME certificate validity duration (cert_lifetime)"
+        }
+        log = {
+            type = map(object({
+                output              = optional(string, "")
+                file_roll_size      = optional(string, "")
+                file_roll_keep      = optional(number)
+                file_roll_keep_for  = optional(string, "")
+                format              = optional(string, "")
+                level               = optional(string, "")
+                include             = optional(list(string), [])
+                exclude             = optional(list(string), [])
+                sampling_interval   = optional(string, "")
+                sampling_first      = optional(number)
+                sampling_thereafter = optional(number)
+            }))
+            default     = {}
+            description = "Global named loggers configuration (use key 'default' for the default logger)"
+        }
+        preferred_chains = {
+            type = object({
+                smallest         = optional(bool, false)
+                root_common_name = optional(list(string), [])
+                any_common_name  = optional(list(string), [])
+            })
+            default     = null
+            description = "Global preferred ACME certificate chain selection criteria (preferred_chains)"
+        }
+        persist_config_off = {
+            type        = bool
+            default     = false
+            description = "Disable persisting active configuration to disk (persist_config off)"
+        }
+        tls_resolvers = {
+            type        = list(string)
+            default     = []
+            description = "Global DNS resolvers for TLS ACME challenges (tls_resolvers)"
+        }
+        tls_automate_names = {
+            type        = list(string)
+            default     = []
+            description = "Domain names to automate certificates for globally (tls_automate_names)"
+        }
+        renewal_window_ratio = {
+            type        = number
+            default     = null
+            description = "Fraction of certificate lifetime remaining before renewal (renewal_window_ratio)"
+        }
+        pki = {
+            type = map(object({
+                name                  = optional(string, "")
+                root_cn               = optional(string, "")
+                intermediate_cn       = optional(string, "")
+                intermediate_lifetime = optional(string, "")
+                maintenance_interval  = optional(string, "")
+                renewal_window_ratio  = optional(number)
+                root_cert             = optional(string, "")
+                root_key              = optional(string, "")
+                root_format           = optional(string, "")
+                intermediate_cert     = optional(string, "")
+                intermediate_key      = optional(string, "")
+                intermediate_format   = optional(string, "")
+            }))
+            default     = {}
+            description = "Global PKI Certificate Authorities keyed by CA ID (pki { ca <id> { ... } })"
+        }
+        events = {
+            type = list(object({
+                event   = string
+                handler = string
+            }))
+            default     = []
+            description = "Global event subscriptions (events { on <event> <handler> })"
+        }
+        filesystems = {
+            type        = map(string)
+            default     = {}
+            description = "Global filesystem module registrations keyed by name (filesystem <name> <module>)"
+        }
+
+        # =====================================================================
+        # Reusable Snippets & Named Routes
+        # =====================================================================
+        snippets = {
+            type        = map(string)
+            default     = {}
+            description = "Reusable Caddyfile snippets keyed by snippet name: (name) { ... }"
+        }
+        named_routes = {
+            type        = map(string)
+            default     = {}
+            description = "Reusable named routes keyed by route name: &(name) { ... } (invoked via invoke <name>)"
+        }
+
+        # =====================================================================
+        # Sites & Full Directive Layer
+        # =====================================================================
+        sites = {
+            type = map(object({
+                # Shorthand reverse-proxy attributes (backwards-compatible with simple Caddy module)
+                host          = optional(string, "")
+                upstream      = optional(string, "")
+                upstream_port = optional(number)
+                upstreams     = optional(list(string), [])
+                path_prefix   = optional(string, "")
+
+                # Site addresses, bind & snippet imports
+                addresses      = optional(list(string), [])
+                bind           = optional(list(string), ["127.0.0.1"])
+                bind_protocols = optional(list(string), [])
+                imports        = optional(list(string), [])
+
+                # Named request matchers (@<name>)
+                matchers = optional(map(object({
+                    expression      = optional(string, "")
+                    host            = optional(list(string), [])
+                    path            = optional(list(string), [])
+                    path_regexp     = optional(string, "")
+                    method          = optional(list(string), [])
+                    query           = optional(map(list(string)), {})
+                    header          = optional(map(list(string)), {})
+                    header_regexp   = optional(map(string), {})
+                    protocol        = optional(string, "")
+                    remote_ip       = optional(list(string), [])
+                    client_ip       = optional(list(string), [])
+                    vars            = optional(map(list(string)), {})
+                    vars_regexp     = optional(map(string), {})
+                    file_try_files  = optional(list(string), [])
+                    file_try_policy = optional(string, "")
+                    file_split_path = optional(list(string), [])
+                    not_path        = optional(list(string), [])
+                    not_method      = optional(list(string), [])
+                    not_remote_ip   = optional(list(string), [])
+                })), {})
+
+                # TLS directive (tls)
+                tls = optional(object({
+                    internal                      = optional(bool, false)
+                    email                         = optional(string, "")
+                    force_automate                = optional(bool, false)
+                    cert_file                     = optional(string, "")
+                    key_file                      = optional(string, "")
+                    protocols_min                 = optional(string, "")
+                    protocols_max                 = optional(string, "")
+                    ciphers                       = optional(list(string), [])
+                    curves                        = optional(list(string), [])
+                    alpn                          = optional(list(string), [])
+                    load_folders                  = optional(list(string), [])
+                    ca                            = optional(string, "")
+                    ca_root                       = optional(string, "")
+                    key_type                      = optional(string, "")
+                    dns_provider                  = optional(string, "")
+                    propagation_delay             = optional(string, "")
+                    propagation_timeout           = optional(string, "")
+                    resolvers                     = optional(list(string), [])
+                    dns_ttl                       = optional(string, "")
+                    dns_challenge_override_domain = optional(string, "")
+                    on_demand                     = optional(bool, false)
+                    reuse_private_keys            = optional(bool, false)
+                    eab_key_id                    = optional(string, "")
+                    eab_mac_key                   = optional(string, "")
+                    insecure_secrets_log          = optional(string, "")
+                    renewal_window_ratio          = optional(number)
+                    client_auth = optional(object({
+                        mode                    = optional(string, "")
+                        trusted_ca_cert_files   = optional(list(string), [])
+                        trusted_leaf_cert_files = optional(list(string), [])
+                    }))
+                }))
+
+                # Filesystem, root, vars & map directives
+                fs   = optional(string, "")
+                root = optional(string, "")
+                vars = optional(map(string), {})
+                maps = optional(list(object({
+                    matcher      = optional(string, "")
+                    source       = string
+                    destinations = list(string)
+                    mappings     = map(list(string))
+                    defaults     = optional(list(string), [])
+                })), [])
+
+                # Logging directives (log, log_skip, log_name, log_append)
+                log = optional(object({
+                    enabled             = optional(bool, true)
+                    name                = optional(string, "")
+                    hostnames           = optional(list(string), [])
+                    no_hostname         = optional(bool, false)
+                    output              = optional(string, "")
+                    format              = optional(string, "")
+                    level               = optional(string, "")
+                    sampling_interval   = optional(string, "")
+                    sampling_first      = optional(number)
+                    sampling_thereafter = optional(number)
+                }))
+                log_skip = optional(list(string), [])
+                log_name = optional(list(string), [])
+                log_append = optional(list(object({
+                    matcher = optional(string, "")
+                    key     = string
+                    value   = string
+                    early   = optional(bool, false)
+                })), [])
+
+                # Headers, request_body & timeouts directives
+                headers = optional(list(object({
+                    matcher = optional(string, "")
+                    set     = optional(map(string), {})
+                    add     = optional(map(string), {})
+                    default = optional(map(string), {})
+                    delete  = optional(list(string), [])
+                    replace = optional(list(object({
+                        field       = string
+                        search      = string
+                        replacement = string
+                    })), [])
+                    defer = optional(bool, false)
+                })), [])
+                request_headers = optional(list(object({
+                    matcher = optional(string, "")
+                    set     = optional(map(string), {})
+                    add     = optional(map(string), {})
+                    delete  = optional(list(string), [])
+                    replace = optional(list(object({
+                        field       = string
+                        search      = string
+                        replacement = string
+                    })), [])
+                })), [])
+                request_body = optional(object({
+                    matcher  = optional(string, "")
+                    max_size = optional(string, "")
+                }))
+                timeouts = optional(object({
+                    matcher         = optional(string, "")
+                    read_timeout    = optional(string, "")
+                    write_timeout   = optional(string, "")
+                    max_write_chunk = optional(number)
+                }))
+
+                # Redirects, method, rewrite, uri & try_files directives
+                redirects = optional(list(object({
+                    matcher = optional(string, "")
+                    to      = string
+                    code    = optional(string, "")
+                })), [])
+                methods = optional(list(object({
+                    matcher = optional(string, "")
+                    method  = string
+                })), [])
+                rewrites = optional(list(object({
+                    matcher = optional(string, "")
+                    to      = string
+                })), [])
+                uris = optional(list(object({
+                    matcher     = optional(string, "")
+                    op          = string
+                    target      = string
+                    replacement = optional(string, "")
+                    limit       = optional(number)
+                })), [])
+                try_files = optional(object({
+                    files  = list(string)
+                    policy = optional(string, "")
+                }))
+
+                # Authentication directives (basic_auth, forward_auth)
+                basic_auth = optional(list(object({
+                    matcher        = optional(string, "")
+                    hash_algorithm = optional(string, "")
+                    realm          = optional(string, "")
+                    users          = map(string)
+                })), [])
+                forward_auth = optional(list(object({
+                    matcher                  = optional(string, "")
+                    upstreams                = list(string)
+                    uri                      = string
+                    copy_headers             = optional(list(string), [])
+                    header_up                = optional(map(string), {})
+                    tls_insecure_skip_verify = optional(bool, false)
+                })), [])
+
+                # Middleware directives (encode, push, templates, tracing, intercept, invoke)
+                encode = optional(object({
+                    matcher               = optional(string, "")
+                    formats               = optional(list(string), ["zstd", "gzip"])
+                    gzip_level            = optional(number)
+                    zstd_level            = optional(string, "")
+                    zstd_disable_checksum = optional(bool, false)
+                    minimum_length        = optional(number)
+                    match_status          = optional(list(string), [])
+                    match_headers         = optional(map(string), {})
+                }))
+                push = optional(object({
+                    matcher        = optional(string, "")
+                    resources      = optional(list(string), [])
+                    headers_set    = optional(map(string), {})
+                    headers_delete = optional(list(string), [])
+                }))
+                templates = optional(object({
+                    matcher       = optional(string, "")
+                    mime          = optional(list(string), [])
+                    between_open  = optional(string, "")
+                    between_close = optional(string, "")
+                    root          = optional(string, "")
+                    extensions    = optional(list(string), [])
+                }))
+                tracing = optional(object({
+                    matcher         = optional(string, "")
+                    span            = string
+                    span_attributes = optional(map(string), {})
+                }))
+                intercept = optional(object({
+                    matcher = optional(string, "")
+                    replace_status = optional(list(object({
+                        matcher     = optional(string, "")
+                        status_code = number
+                    })), [])
+                }))
+                invoke = optional(list(object({
+                    matcher = optional(string, "")
+                    name    = string
+                })), [])
+
+                # Full reverse_proxy configuration
+                reverse_proxy = optional(object({
+                    matcher = optional(string, "")
+                    to      = optional(list(string), [])
+                    dynamic_srv = optional(object({
+                        service             = optional(string, "")
+                        proto               = optional(string, "")
+                        name                = optional(string, "")
+                        refresh             = optional(string, "")
+                        resolvers           = optional(list(string), [])
+                        dial_timeout        = optional(string, "")
+                        dial_fallback_delay = optional(string, "")
+                        grace_period        = optional(string, "")
+                    }))
+                    dynamic_a = optional(object({
+                        name                = string
+                        port                = string
+                        refresh             = optional(string, "")
+                        resolvers           = optional(list(string), [])
+                        dial_timeout        = optional(string, "")
+                        dial_fallback_delay = optional(string, "")
+                        ipv4                = optional(bool, false)
+                        ipv6                = optional(bool, false)
+                    }))
+                    lb_policy                      = optional(string, "")
+                    lb_retries                     = optional(number)
+                    lb_try_duration                = optional(string, "")
+                    lb_try_interval                = optional(string, "")
+                    lb_retry_match                 = optional(string, "")
+                    health_uri                     = optional(string, "")
+                    health_port                    = optional(number)
+                    health_interval                = optional(string, "")
+                    health_passes                  = optional(number)
+                    health_fails                   = optional(number)
+                    health_timeout                 = optional(string, "")
+                    health_status                  = optional(string, "")
+                    health_body                    = optional(string, "")
+                    health_method                  = optional(string, "")
+                    health_request_body            = optional(string, "")
+                    health_follow_redirects        = optional(bool, false)
+                    health_headers                 = optional(map(string), {})
+                    fail_duration                  = optional(string, "")
+                    max_fails                      = optional(number)
+                    unhealthy_status               = optional(string, "")
+                    unhealthy_latency              = optional(string, "")
+                    unhealthy_request_count        = optional(number)
+                    flush_interval                 = optional(string, "")
+                    request_buffers                = optional(string, "")
+                    response_buffers               = optional(string, "")
+                    stream_buffer_size             = optional(string, "")
+                    stream_timeout                 = optional(string, "")
+                    stream_close_delay             = optional(string, "")
+                    proxy_status_name              = optional(string, "")
+                    verbose_logs                   = optional(bool, false)
+                    trusted_proxies                = optional(list(string), [])
+                    trusted_proxies_private_ranges = optional(bool, false)
+                    header_up_set                  = optional(map(string), {})
+                    header_up_add                  = optional(map(string), {})
+                    header_up_delete               = optional(list(string), [])
+                    header_down_set                = optional(map(string), {})
+                    header_down_add                = optional(map(string), {})
+                    header_down_delete             = optional(list(string), [])
+                    method                         = optional(string, "")
+                    rewrite                        = optional(string, "")
+                    replace_status = optional(list(object({
+                        matcher     = optional(string, "")
+                        status_code = number
+                    })), [])
+                    transport_http = optional(object({
+                        read_buffer                  = optional(string, "")
+                        write_buffer                 = optional(string, "")
+                        read_timeout                 = optional(string, "")
+                        write_timeout                = optional(string, "")
+                        max_response_header          = optional(string, "")
+                        proxy_protocol               = optional(string, "")
+                        forward_proxy_url            = optional(string, "")
+                        dial_timeout                 = optional(string, "")
+                        dial_fallback_delay          = optional(string, "")
+                        response_header_timeout      = optional(string, "")
+                        expect_continue_timeout      = optional(string, "")
+                        resolvers                    = optional(list(string), [])
+                        tls                          = optional(bool, false)
+                        tls_client_auth_automate     = optional(string, "")
+                        tls_client_auth_cert         = optional(string, "")
+                        tls_client_auth_key          = optional(string, "")
+                        tls_insecure_skip_verify     = optional(bool, false)
+                        tls_curves                   = optional(list(string), [])
+                        tls_timeout                  = optional(string, "")
+                        tls_trusted_ca_certs         = optional(list(string), [])
+                        tls_server_name              = optional(string, "")
+                        tls_renegotiation            = optional(string, "")
+                        tls_except_ports             = optional(list(string), [])
+                        keepalive                    = optional(string, "")
+                        keepalive_interval           = optional(string, "")
+                        keepalive_idle_conns         = optional(number)
+                        keepalive_idle_conns_per_host = optional(number)
+                        versions                     = optional(list(string), [])
+                        compression_off              = optional(bool, false)
+                        max_conns_per_host           = optional(number)
+                        local_address                = optional(string, "")
+                    }))
+                    transport_fastcgi = optional(object({
+                        root                 = optional(string, "")
+                        split                = optional(string, "")
+                        env                  = optional(map(string), {})
+                        resolve_root_symlink = optional(bool, false)
+                        dial_timeout         = optional(string, "")
+                        read_timeout         = optional(string, "")
+                        write_timeout        = optional(string, "")
+                        capture_stderr       = optional(bool, false)
+                    }))
+                }))
+                reverse_proxies = optional(list(object({
+                    matcher         = optional(string, "")
+                    to              = list(string)
+                    lb_policy       = optional(string, "")
+                    health_uri      = optional(string, "")
+                    header_up_set   = optional(map(string), {})
+                    header_down_set = optional(map(string), {})
+                    flush_interval  = optional(string, "")
+                })), [])
+
+                # PHP FastCGI (php_fastcgi)
+                php_fastcgi = optional(object({
+                    matcher              = optional(string, "")
+                    upstreams            = list(string)
+                    root                 = optional(string, "")
+                    split                = optional(string, "")
+                    env                  = optional(map(string), {})
+                    index                = optional(string, "")
+                    try_files            = optional(list(string), [])
+                    resolve_root_symlink = optional(bool, false)
+                    dial_timeout         = optional(string, "")
+                    read_timeout         = optional(string, "")
+                    write_timeout        = optional(string, "")
+                    capture_stderr       = optional(bool, false)
+                }))
+
+                # Static file server (file_server)
+                file_server = optional(object({
+                    enabled                = optional(bool, true)
+                    matcher                = optional(string, "")
+                    browse                 = optional(bool, false)
+                    browse_template        = optional(string, "")
+                    fs                     = optional(string, "")
+                    root                   = optional(string, "")
+                    hide                   = optional(list(string), [])
+                    index                  = optional(list(string), [])
+                    reveal_symlinks        = optional(bool, false)
+                    sort                   = optional(string, "")
+                    file_limit             = optional(number)
+                    precompressed          = optional(list(string), [])
+                    status                 = optional(string, "")
+                    disable_canonical_uris = optional(bool, false)
+                    pass_thru              = optional(bool, false)
+                    etag_file_extensions   = optional(list(string), [])
+                }))
+
+                # Responders, errors, aborts, metrics & acme_server
+                responds = optional(list(object({
+                    matcher = optional(string, "")
+                    body    = optional(string, "")
+                    status  = optional(number)
+                    close   = optional(bool, false)
+                })), [])
+                errors = optional(list(object({
+                    matcher = optional(string, "")
+                    message = optional(string, "")
+                    status  = optional(number)
+                })), [])
+                aborts = optional(list(string), [])
+                metrics = optional(object({
+                    enabled             = optional(bool, true)
+                    matcher             = optional(string, "")
+                    disable_openmetrics = optional(bool, false)
+                }))
+                acme_server = optional(object({
+                    matcher              = optional(string, "")
+                    ca                   = optional(string, "")
+                    lifetime             = optional(string, "")
+                    resolvers            = optional(list(string), [])
+                    challenges           = optional(list(string), [])
+                    allow_wildcard_names = optional(bool, false)
+                    allow_domains        = optional(list(string), [])
+                    allow_ip_ranges      = optional(list(string), [])
+                    deny_domains         = optional(list(string), [])
+                    deny_ip_ranges       = optional(list(string), [])
+                    sign_with_root       = optional(bool, false)
+                }))
+
+                # Subroutes: handle, handle_path, route, handle_errors
+                handles = optional(list(object({
+                    matcher          = optional(string, "")
+                    reverse_proxy_to = optional(list(string), [])
+                    strip_prefix     = optional(string, "")
+                    rewrite_to       = optional(string, "")
+                    root             = optional(string, "")
+                    file_server      = optional(bool, false)
+                    respond_body     = optional(string, "")
+                    respond_status   = optional(number)
+                    redir_to         = optional(string, "")
+                    redir_code       = optional(string, "")
+                    headers_set      = optional(map(string), {})
+                })), [])
+                handle_paths = optional(list(object({
+                    path             = string
+                    reverse_proxy_to = optional(list(string), [])
+                    rewrite_to       = optional(string, "")
+                    root             = optional(string, "")
+                    file_server      = optional(bool, false)
+                    respond_body     = optional(string, "")
+                    respond_status   = optional(number)
+                    redir_to         = optional(string, "")
+                    redir_code       = optional(string, "")
+                    headers_set      = optional(map(string), {})
+                })), [])
+                routes = optional(list(object({
+                    matcher          = optional(string, "")
+                    reverse_proxy_to = optional(list(string), [])
+                    strip_prefix     = optional(string, "")
+                    rewrite_to       = optional(string, "")
+                    root             = optional(string, "")
+                    file_server      = optional(bool, false)
+                    respond_body     = optional(string, "")
+                    respond_status   = optional(number)
+                    redir_to         = optional(string, "")
+                    redir_code       = optional(string, "")
+                    headers_set      = optional(map(string), {})
+                })), [])
+                handle_errors = optional(list(object({
+                    status_codes     = optional(list(string), [])
+                    respond_body     = optional(string, "")
+                    respond_status   = optional(number)
+                    rewrite_to       = optional(string, "")
+                    file_server      = optional(bool, false)
+                    reverse_proxy_to = optional(list(string), [])
+                    headers_set      = optional(map(string), {})
+                })), [])
+                extra_directives = optional(list(string), [])
+            }))
+            default     = {}
+            description = "Map of site blocks keyed by subdomain/site name"
+        }
+    }
+
+    component "caddy" {
+        toolchain {
+            go {
+                version = "1.26.0"
+            }
+        }
+
+        service "go" "caddy" {
+            git {
+                url = "github.com/caddyserver/caddy"
+                tag = "v2.11.7"
+            }
+
+            vars = {
+                http  = inputs.http_port != null ? inputs.http_port : net::pickport()
+                https = inputs.https_port != null ? inputs.https_port : net::pickport()
+                admin = inputs.admin_port != null ? inputs.admin_port : net::pickport()
+            }
+
+            print = "http://127.0.0.1:${self.vars.http}/  (caddy)%{for name, s in inputs.sites} ${features.tls || inputs.local_certs || s.tls != null ? "https" : "http"}://${s.host != "" ? s.host : "${name}.${inputs.domain}"}:${features.tls || inputs.local_certs || s.tls != null ? self.vars.https : self.vars.http}/%{endfor}"
+
+            env = {
+                XDG_CONFIG_HOME = "${fs::var()}/config"
+                XDG_DATA_HOME   = "${fs::var()}/data"
+            }
+
+            file "caddyfile" {
+                path = "${fs::etc()}/Caddyfile"
+                body = <<-EOF
+{
+%{if features.debug || inputs.debug ~}
+    debug
+%{endif ~}
+    http_port ${self.vars.http}
+    https_port ${self.vars.https}
+%{if inputs.default_bind != null ~}
+%{if [for p in inputs.default_bind.protocols : p] != [] ~}
+    default_bind%{for a in inputs.default_bind.addresses} ${a}%{endfor} {
+        protocols%{for p in inputs.default_bind.protocols} ${p}%{endfor}
+    }
+%{else ~}
+    default_bind%{for a in inputs.default_bind.addresses} ${a}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if inputs.grace_period != "" ~}
+    grace_period ${inputs.grace_period}
+%{endif ~}
+%{if inputs.shutdown_delay != "" ~}
+    shutdown_delay ${inputs.shutdown_delay}
+%{endif ~}
+%{if inputs.default_sni != "" ~}
+    default_sni ${inputs.default_sni}
+%{endif ~}
+%{if inputs.fallback_sni != "" ~}
+    fallback_sni ${inputs.fallback_sni}
+%{endif ~}
+%{for ord in inputs.order ~}
+    order ${ord.directive} ${ord.position}${ord.target != "" ? " ${ord.target}" : ""}
+%{endfor ~}
+    storage file_system ${inputs.storage_root != "" ? inputs.storage_root : fs::var()}
+%{if inputs.storage_check != "" ~}
+    storage_check ${inputs.storage_check}
+%{endif ~}
+%{if inputs.storage_clean_interval != "" ~}
+    storage_clean_interval ${inputs.storage_clean_interval}
+%{endif ~}
+%{if inputs.renew_interval != "" ~}
+    renew_interval ${inputs.renew_interval}
+%{endif ~}
+%{if inputs.ocsp_interval != "" ~}
+    ocsp_interval ${inputs.ocsp_interval}
+%{endif ~}
+%{if inputs.acme_ca != "" ~}
+    acme_ca ${inputs.acme_ca}
+%{endif ~}
+%{if inputs.acme_ca_root != "" ~}
+    acme_ca_root ${inputs.acme_ca_root}
+%{endif ~}
+%{if inputs.acme_eab != null ~}
+    acme_eab {
+        key_id ${inputs.acme_eab.key_id}
+        mac_key ${inputs.acme_eab.mac_key}
+    }
+%{endif ~}
+%{if !features.trust && inputs.skip_install_trust ~}
+    skip_install_trust
+%{endif ~}
+%{if inputs.email != "" ~}
+    email ${inputs.email}
+%{endif ~}
+%{if features.admin || (inputs.admin != null && inputs.admin.enabled) ~}
+    admin ${inputs.admin != null && inputs.admin.listen != "" ? inputs.admin.listen : "127.0.0.1:${self.vars.admin}"} {
+%{if inputs.admin != null && inputs.admin.enforce_origin ~}
+        enforce_origin
+%{endif ~}
+%{if inputs.admin != null && [for o in inputs.admin.origins : o] != [] ~}
+        origins%{for o in inputs.admin.origins} ${o}%{endfor}
+%{endif ~}
+    }
+%{else ~}
+    admin off
+%{endif ~}
+%{if inputs.on_demand_tls != null ~}
+    on_demand_tls {
+%{if inputs.on_demand_tls.ask != "" ~}
+        ask ${inputs.on_demand_tls.ask}
+%{endif ~}
+%{if inputs.on_demand_tls.permission_module != "" ~}
+        permission ${inputs.on_demand_tls.permission_module}
+%{endif ~}
+    }
+%{endif ~}
+%{if features.tls || inputs.local_certs ~}
+    local_certs
+%{endif ~}
+%{if inputs.key_type != "" ~}
+    key_type ${inputs.key_type}
+%{endif ~}
+%{if [for opt in inputs.auto_https : opt] != [] ~}
+    auto_https%{for opt in inputs.auto_https} ${opt}%{endfor}
+%{else ~}
+%{if !features.tls && !inputs.local_certs ~}
+    auto_https off
+%{endif ~}
+%{endif ~}
+%{if features.metrics || (inputs.metrics != null && inputs.metrics.enabled) ~}
+    metrics {
+%{if inputs.metrics != null && inputs.metrics.per_host ~}
+        per_host
+%{endif ~}
+%{if inputs.metrics != null && inputs.metrics.observe_catchall_hosts ~}
+        observe_catchall_hosts
+%{endif ~}
+%{if inputs.metrics != null && inputs.metrics.otlp ~}
+        otlp
+%{endif ~}
+    }
+%{endif ~}
+%{for srv_opt in inputs.servers_options ~}
+    servers${srv_opt.listener_address != "" ? " ${srv_opt.listener_address}" : ""} {
+%{if srv_opt.name != "" ~}
+        name ${srv_opt.name}
+%{endif ~}
+%{if [for w in srv_opt.listener_wrappers : w] != [] ~}
+        listener_wrappers {
+%{for w in srv_opt.listener_wrappers ~}
+            ${w}
+%{endfor ~}
+        }
+%{endif ~}
+%{if [for w in srv_opt.packet_conn_wrappers : w] != [] ~}
+        packet_conn_wrappers {
+%{for w in srv_opt.packet_conn_wrappers ~}
+            ${w}
+%{endfor ~}
+        }
+%{endif ~}
+%{if srv_opt.read_body != "" || srv_opt.read_body_idle != "" || srv_opt.read_header != "" || srv_opt.write != "" || srv_opt.write_idle != "" || srv_opt.write_max_chunk != "" || srv_opt.idle != "" ~}
+        timeouts {
+%{if srv_opt.read_body != "" ~}
+            read_body ${srv_opt.read_body}
+%{endif ~}
+%{if srv_opt.read_body_idle != "" ~}
+            read_body_idle ${srv_opt.read_body_idle}
+%{endif ~}
+%{if srv_opt.read_header != "" ~}
+            read_header ${srv_opt.read_header}
+%{endif ~}
+%{if srv_opt.write != "" ~}
+            write ${srv_opt.write}
+%{endif ~}
+%{if srv_opt.write_idle != "" ~}
+            write_idle ${srv_opt.write_idle}
+%{endif ~}
+%{if srv_opt.write_max_chunk != "" ~}
+            write_max_chunk ${srv_opt.write_max_chunk}
+%{endif ~}
+%{if srv_opt.idle != "" ~}
+            idle ${srv_opt.idle}
+%{endif ~}
+        }
+%{endif ~}
+%{if srv_opt.keepalive_interval != "" ~}
+        keepalive_interval ${srv_opt.keepalive_interval}
+%{endif ~}
+%{if srv_opt.keepalive_idle != "" ~}
+        keepalive_idle ${srv_opt.keepalive_idle}
+%{endif ~}
+%{if srv_opt.keepalive_count != null ~}
+        keepalive_count ${srv_opt.keepalive_count}
+%{endif ~}
+%{if srv_opt.max_header_size != "" ~}
+        max_header_size ${srv_opt.max_header_size}
+%{endif ~}
+%{if srv_opt.enable_full_duplex ~}
+        enable_full_duplex
+%{endif ~}
+%{if [for h in srv_opt.expected_underscore_headers : h] != [] ~}
+        expected_underscore_headers%{for h in srv_opt.expected_underscore_headers} ${h}%{endfor}
+%{endif ~}
+%{if [for h in srv_opt.expected_dot_headers : h] != [] ~}
+        expected_dot_headers%{for h in srv_opt.expected_dot_headers} ${h}%{endfor}
+%{endif ~}
+%{if srv_opt.log_credentials ~}
+        log_credentials
+%{endif ~}
+%{if [for p in srv_opt.protocols : p] != [] ~}
+        protocols%{for p in srv_opt.protocols} ${p}%{endfor}
+%{endif ~}
+%{if srv_opt.strict_sni_host != null ~}
+        strict_sni_host ${srv_opt.strict_sni_host ? "" : "off"}
+%{endif ~}
+%{if srv_opt.trusted_proxies_private_ranges || [for r in srv_opt.trusted_proxies : r] != [] ~}
+        trusted_proxies static${srv_opt.trusted_proxies_private_ranges ? " private_ranges" : ""}%{for r in srv_opt.trusted_proxies} ${r}%{endfor}
+%{endif ~}
+%{if srv_opt.trusted_proxies_strict ~}
+        trusted_proxies_strict
+%{endif ~}
+%{if srv_opt.trusted_proxies_unix ~}
+        trusted_proxies_unix
+%{endif ~}
+%{if [for h in srv_opt.client_ip_headers : h] != [] ~}
+        client_ip_headers%{for h in srv_opt.client_ip_headers} ${h}%{endfor}
+%{endif ~}
+%{if srv_opt.trace ~}
+        trace
+%{endif ~}
+%{if srv_opt.allow_0rtt != null && !srv_opt.allow_0rtt ~}
+        0rtt off
+%{endif ~}
+    }
+%{endfor ~}
+%{if inputs.ocsp_stapling_off ~}
+    ocsp_stapling off
+%{endif ~}
+%{if inputs.cert_lifetime != "" ~}
+    cert_lifetime ${inputs.cert_lifetime}
+%{endif ~}
+%{for log_name, lg in inputs.log ~}
+    log${log_name != "default" ? " ${log_name}" : ""} {
+%{if lg.output != "" ~}
+        output ${lg.output}%{if lg.file_roll_size != "" || lg.file_roll_keep != null || lg.file_roll_keep_for != ""} {
+%{if lg.file_roll_size != "" ~}
+            roll_size ${lg.file_roll_size}
+%{endif ~}
+%{if lg.file_roll_keep != null ~}
+            roll_keep ${lg.file_roll_keep}
+%{endif ~}
+%{if lg.file_roll_keep_for != "" ~}
+            roll_keep_for ${lg.file_roll_keep_for}
+%{endif ~}
+        }%{endif}
+%{endif ~}
+%{if lg.format != "" ~}
+        format ${lg.format}
+%{endif ~}
+%{if lg.level != "" ~}
+        level ${lg.level}
+%{endif ~}
+%{if [for inc in lg.include : inc] != [] ~}
+        include%{for inc in lg.include} ${inc}%{endfor}
+%{endif ~}
+%{if [for exc in lg.exclude : exc] != [] ~}
+        exclude%{for exc in lg.exclude} ${exc}%{endfor}
+%{endif ~}
+%{if lg.sampling_interval != "" || lg.sampling_first != null || lg.sampling_thereafter != null ~}
+        sampling {
+%{if lg.sampling_interval != "" ~}
+            interval ${lg.sampling_interval}
+%{endif ~}
+%{if lg.sampling_first != null ~}
+            first ${lg.sampling_first}
+%{endif ~}
+%{if lg.sampling_thereafter != null ~}
+            thereafter ${lg.sampling_thereafter}
+%{endif ~}
+        }
+%{endif ~}
+    }
+%{endfor ~}
+%{if inputs.preferred_chains != null ~}
+%{if inputs.preferred_chains.smallest ~}
+    preferred_chains smallest
+%{else ~}
+    preferred_chains {
+%{if [for cn in inputs.preferred_chains.root_common_name : cn] != [] ~}
+        root_common_name%{for cn in inputs.preferred_chains.root_common_name} "${cn}"%{endfor}
+%{endif ~}
+%{if [for cn in inputs.preferred_chains.any_common_name : cn] != [] ~}
+        any_common_name%{for cn in inputs.preferred_chains.any_common_name} "${cn}"%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{endif ~}
+%{if inputs.persist_config_off ~}
+    persist_config off
+%{endif ~}
+%{if [for r in inputs.tls_resolvers : r] != [] ~}
+    tls_resolvers%{for r in inputs.tls_resolvers} ${r}%{endfor}
+%{endif ~}
+%{if [for n in inputs.tls_automate_names : n] != [] ~}
+    tls_automate_names%{for n in inputs.tls_automate_names} ${n}%{endfor}
+%{endif ~}
+%{if inputs.renewal_window_ratio != null ~}
+    renewal_window_ratio ${inputs.renewal_window_ratio}
+%{endif ~}
+%{if [for _, ca in inputs.pki : ca] != [] ~}
+    pki {
+%{for ca_id, ca in inputs.pki ~}
+        ca ${ca_id} {
+%{if ca.name != "" ~}
+            name "${ca.name}"
+%{endif ~}
+%{if ca.root_cn != "" ~}
+            root_cn "${ca.root_cn}"
+%{endif ~}
+%{if ca.intermediate_cn != "" ~}
+            intermediate_cn "${ca.intermediate_cn}"
+%{endif ~}
+%{if ca.intermediate_lifetime != "" ~}
+            intermediate_lifetime ${ca.intermediate_lifetime}
+%{endif ~}
+%{if ca.maintenance_interval != "" ~}
+            maintenance_interval ${ca.maintenance_interval}
+%{endif ~}
+%{if ca.renewal_window_ratio != null ~}
+            renewal_window_ratio ${ca.renewal_window_ratio}
+%{endif ~}
+%{if ca.root_cert != "" || ca.root_key != "" || ca.root_format != "" ~}
+            root {
+%{if ca.root_cert != "" ~}
+                cert ${ca.root_cert}
+%{endif ~}
+%{if ca.root_key != "" ~}
+                key ${ca.root_key}
+%{endif ~}
+%{if ca.root_format != "" ~}
+                format ${ca.root_format}
+%{endif ~}
+            }
+%{endif ~}
+%{if ca.intermediate_cert != "" || ca.intermediate_key != "" || ca.intermediate_format != "" ~}
+            intermediate {
+%{if ca.intermediate_cert != "" ~}
+                cert ${ca.intermediate_cert}
+%{endif ~}
+%{if ca.intermediate_key != "" ~}
+                key ${ca.intermediate_key}
+%{endif ~}
+%{if ca.intermediate_format != "" ~}
+                format ${ca.intermediate_format}
+%{endif ~}
+            }
+%{endif ~}
+        }
+%{endfor ~}
+    }
+%{endif ~}
+%{if [for ev in inputs.events : ev] != [] ~}
+    events {
+%{for ev in inputs.events ~}
+        on ${ev.event} ${ev.handler}
+%{endfor ~}
+    }
+%{endif ~}
+%{for fs_name, fs_mod in inputs.filesystems ~}
+    filesystem ${fs_name} ${fs_mod}
+%{endfor ~}
+}
+%{for snippet_name, snippet_body in inputs.snippets ~}
+
+(${snippet_name}) {
+    ${snippet_body}
+}
+%{endfor ~}
+%{for route_name, route_body in inputs.named_routes ~}
+
+&(${route_name}) {
+    ${route_body}
+}
+%{endfor ~}
+
+:${self.vars.http} {
+    bind 127.0.0.1
+    respond ${inputs.health_path} "ok" 200
+%{if features.metrics || (inputs.metrics != null && inputs.metrics.enabled) ~}
+    metrics ${inputs.metrics != null ? inputs.metrics.path : "/metrics"}%{if inputs.metrics != null && inputs.metrics.disable_openmetrics} {
+        disable_openmetrics
+    }%{endif}
+%{endif ~}
+    import ${fs::etc()}/sites/*.caddy
+}
+%{for name, site in inputs.sites ~}
+
+%{if [for addr in site.addresses : addr] != [] ~}
+%{for i, addr in site.addresses}${i > 0 ? ", " : ""}${addr}%{endfor} {
+%{else ~}
+${features.tls || inputs.local_certs || site.tls != null ? "https://${site.host != "" ? site.host : "${name}.${inputs.domain}"}:${self.vars.https}, " : ""}http://${site.host != "" ? site.host : "${name}.${inputs.domain}"}:${self.vars.http} {
+%{endif ~}
+%{if [for b in site.bind : b] != [] ~}
+%{if [for p in site.bind_protocols : p] != [] ~}
+    bind%{for b in site.bind} ${b}%{endfor} {
+        protocols%{for p in site.bind_protocols} ${p}%{endfor}
+    }
+%{else ~}
+    bind%{for b in site.bind} ${b}%{endfor}
+%{endif ~}
+%{endif ~}
+%{for imp in site.imports ~}
+    import ${imp}
+%{endfor ~}
+%{for m_name, m in site.matchers ~}
+    @${m_name} {
+%{if m.expression != "" ~}
+        expression ${m.expression}
+%{endif ~}
+%{if [for h in m.host : h] != [] ~}
+        host%{for h in m.host} ${h}%{endfor}
+%{endif ~}
+%{if [for p in m.path : p] != [] ~}
+        path%{for p in m.path} ${p}%{endfor}
+%{endif ~}
+%{if m.path_regexp != "" ~}
+        path_regexp ${m.path_regexp}
+%{endif ~}
+%{if [for mth in m.method : mth] != [] ~}
+        method%{for mth in m.method} ${mth}%{endfor}
+%{endif ~}
+%{for qk, qvals in m.query ~}
+        query %{for qv in qvals}${qk}=${qv} %{endfor}
+%{endfor ~}
+%{for hk, hvals in m.header ~}
+        header ${hk}%{for hv in hvals} ${hv}%{endfor}
+%{endfor ~}
+%{for hk, hre in m.header_regexp ~}
+        header_regexp ${hk} ${hre}
+%{endfor ~}
+%{if m.protocol != "" ~}
+        protocol ${m.protocol}
+%{endif ~}
+%{if [for ip in m.remote_ip : ip] != [] ~}
+        remote_ip%{for ip in m.remote_ip} ${ip}%{endfor}
+%{endif ~}
+%{if [for ip in m.client_ip : ip] != [] ~}
+        client_ip%{for ip in m.client_ip} ${ip}%{endfor}
+%{endif ~}
+%{for vk, vvals in m.vars ~}
+        vars ${vk}%{for vv in vvals} ${vv}%{endfor}
+%{endfor ~}
+%{for vk, vre in m.vars_regexp ~}
+        vars_regexp ${vk} ${vre}
+%{endfor ~}
+%{if [for tf in m.file_try_files : tf] != [] || m.file_try_policy != "" || [for sp in m.file_split_path : sp] != [] ~}
+        file {
+%{if [for tf in m.file_try_files : tf] != [] ~}
+            try_files%{for tf in m.file_try_files} ${tf}%{endfor}
+%{endif ~}
+%{if m.file_try_policy != "" ~}
+            try_policy ${m.file_try_policy}
+%{endif ~}
+%{if [for sp in m.file_split_path : sp] != [] ~}
+            split_path%{for sp in m.file_split_path} ${sp}%{endfor}
+%{endif ~}
+        }
+%{endif ~}
+%{if [for np in m.not_path : np] != [] ~}
+        not path%{for np in m.not_path} ${np}%{endfor}
+%{endif ~}
+%{if [for nm in m.not_method : nm] != [] ~}
+        not method%{for nm in m.not_method} ${nm}%{endfor}
+%{endif ~}
+%{if [for nip in m.not_remote_ip : nip] != [] ~}
+        not remote_ip%{for nip in m.not_remote_ip} ${nip}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{if site.tls != null ~}
+    tls${site.tls.internal ? " internal" : (site.tls.force_automate ? " force_automate" : (site.tls.email != "" ? " ${site.tls.email}" : (site.tls.cert_file != "" ? " ${site.tls.cert_file} ${site.tls.key_file}" : "")))} {
+%{if site.tls.protocols_min != "" ~}
+        protocols ${site.tls.protocols_min}${site.tls.protocols_max != "" ? " ${site.tls.protocols_max}" : ""}
+%{endif ~}
+%{if [for c in site.tls.ciphers : c] != [] ~}
+        ciphers%{for c in site.tls.ciphers} ${c}%{endfor}
+%{endif ~}
+%{if [for c in site.tls.curves : c] != [] ~}
+        curves%{for c in site.tls.curves} ${c}%{endfor}
+%{endif ~}
+%{if [for a in site.tls.alpn : a] != [] ~}
+        alpn%{for a in site.tls.alpn} ${a}%{endfor}
+%{endif ~}
+%{if [for f in site.tls.load_folders : f] != [] ~}
+        load%{for f in site.tls.load_folders} ${f}%{endfor}
+%{endif ~}
+%{if site.tls.ca != "" ~}
+        ca ${site.tls.ca}
+%{endif ~}
+%{if site.tls.ca_root != "" ~}
+        ca_root ${site.tls.ca_root}
+%{endif ~}
+%{if site.tls.key_type != "" ~}
+        key_type ${site.tls.key_type}
+%{endif ~}
+%{if site.tls.dns_provider != "" ~}
+        dns ${site.tls.dns_provider}
+%{endif ~}
+%{if site.tls.propagation_delay != "" ~}
+        propagation_delay ${site.tls.propagation_delay}
+%{endif ~}
+%{if site.tls.propagation_timeout != "" ~}
+        propagation_timeout ${site.tls.propagation_timeout}
+%{endif ~}
+%{if [for r in site.tls.resolvers : r] != [] ~}
+        resolvers%{for r in site.tls.resolvers} ${r}%{endfor}
+%{endif ~}
+%{if site.tls.dns_ttl != "" ~}
+        dns_ttl ${site.tls.dns_ttl}
+%{endif ~}
+%{if site.tls.dns_challenge_override_domain != "" ~}
+        dns_challenge_override_domain ${site.tls.dns_challenge_override_domain}
+%{endif ~}
+%{if site.tls.on_demand ~}
+        on_demand
+%{endif ~}
+%{if site.tls.reuse_private_keys ~}
+        reuse_private_keys
+%{endif ~}
+%{if site.tls.eab_key_id != "" ~}
+        eab ${site.tls.eab_key_id} ${site.tls.eab_mac_key}
+%{endif ~}
+%{if site.tls.insecure_secrets_log != "" ~}
+        insecure_secrets_log ${site.tls.insecure_secrets_log}
+%{endif ~}
+%{if site.tls.renewal_window_ratio != null ~}
+        renewal_window_ratio ${site.tls.renewal_window_ratio}
+%{endif ~}
+%{if site.tls.client_auth != null ~}
+        client_auth {
+%{if site.tls.client_auth.mode != "" ~}
+            mode ${site.tls.client_auth.mode}
+%{endif ~}
+%{if [for f in site.tls.client_auth.trusted_ca_cert_files : f] != [] ~}
+            trust_pool file%{for f in site.tls.client_auth.trusted_ca_cert_files} ${f}%{endfor}
+%{endif ~}
+%{for f in site.tls.client_auth.trusted_leaf_cert_files ~}
+            trusted_leaf_cert_file ${f}
+%{endfor ~}
+        }
+%{endif ~}
+    }
+%{else ~}
+%{if features.tls || inputs.local_certs ~}
+    tls internal
+%{endif ~}
+%{endif ~}
+%{if site.fs != "" ~}
+    fs ${site.fs}
+%{endif ~}
+%{if site.root != "" ~}
+    root * ${site.root}
+%{endif ~}
+%{if [for k, _ in site.vars : k] != [] ~}
+    vars {
+%{for k, v in site.vars ~}
+        ${k} "${v}"
+%{endfor ~}
+    }
+%{endif ~}
+%{for mp in site.maps ~}
+    map${mp.matcher != "" ? " ${mp.matcher}" : ""} ${mp.source}%{for dst in mp.destinations} ${dst}%{endfor} {
+%{for inp, outs in mp.mappings ~}
+        ${inp}%{for out in outs} ${out}%{endfor}
+%{endfor ~}
+%{if [for d in mp.defaults : d] != [] ~}
+        default%{for d in mp.defaults} ${d}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{if features.log || (site.log != null && site.log.enabled) ~}
+    log${site.log != null && site.log.name != "" ? " ${site.log.name}" : ""} {
+%{if site.log != null && [for h in site.log.hostnames : h] != [] ~}
+        hostnames%{for h in site.log.hostnames} ${h}%{endfor}
+%{endif ~}
+%{if site.log != null && site.log.no_hostname ~}
+        no_hostname
+%{endif ~}
+%{if site.log != null && site.log.output != "" ~}
+        output ${site.log.output}
+%{endif ~}
+%{if site.log != null && site.log.format != "" ~}
+        format ${site.log.format}
+%{endif ~}
+%{if site.log != null && site.log.level != "" ~}
+        level ${site.log.level}
+%{endif ~}
+%{if site.log != null && (site.log.sampling_interval != "" || site.log.sampling_first != null || site.log.sampling_thereafter != null) ~}
+        sampling {
+%{if site.log.sampling_interval != "" ~}
+            interval ${site.log.sampling_interval}
+%{endif ~}
+%{if site.log.sampling_first != null ~}
+            first ${site.log.sampling_first}
+%{endif ~}
+%{if site.log.sampling_thereafter != null ~}
+            thereafter ${site.log.sampling_thereafter}
+%{endif ~}
+        }
+%{endif ~}
+    }
+%{endif ~}
+%{for m in site.log_skip ~}
+    log_skip${m != "*" && m != "" ? " ${m}" : ""}
+%{endfor ~}
+%{if [for n in site.log_name : n] != [] ~}
+    log_name%{for n in site.log_name} ${n}%{endfor}
+%{endif ~}
+%{for la in site.log_append ~}
+    log_append${la.matcher != "" ? " ${la.matcher}" : ""} ${la.early ? "<" : ""}${la.key} ${la.value}
+%{endfor ~}
+%{for hdr in site.headers ~}
+    header${hdr.matcher != "" ? " ${hdr.matcher}" : ""} {
+%{for k, v in hdr.set ~}
+        ${k} "${v}"
+%{endfor ~}
+%{for k, v in hdr.add ~}
+        +${k} "${v}"
+%{endfor ~}
+%{for k, v in hdr.default ~}
+        ?${k} "${v}"
+%{endfor ~}
+%{for k in hdr.delete ~}
+        -${k}
+%{endfor ~}
+%{for rep in hdr.replace ~}
+        ${rep.field} "${rep.search}" "${rep.replacement}"
+%{endfor ~}
+%{if hdr.defer ~}
+        defer
+%{endif ~}
+    }
+%{endfor ~}
+%{for rhdr in site.request_headers ~}
+%{for k, v in rhdr.set ~}
+    request_header${rhdr.matcher != "" ? " ${rhdr.matcher}" : ""} ${k} "${v}"
+%{endfor ~}
+%{for k, v in rhdr.add ~}
+    request_header${rhdr.matcher != "" ? " ${rhdr.matcher}" : ""} +${k} "${v}"
+%{endfor ~}
+%{for k in rhdr.delete ~}
+    request_header${rhdr.matcher != "" ? " ${rhdr.matcher}" : ""} -${k}
+%{endfor ~}
+%{for rep in rhdr.replace ~}
+    request_header${rhdr.matcher != "" ? " ${rhdr.matcher}" : ""} ${rep.field} "${rep.search}" "${rep.replacement}"
+%{endfor ~}
+%{endfor ~}
+%{if site.request_body != null ~}
+    request_body${site.request_body.matcher != "" ? " ${site.request_body.matcher}" : ""} {
+%{if site.request_body.max_size != "" ~}
+        max_size ${site.request_body.max_size}
+%{endif ~}
+    }
+%{endif ~}
+%{if site.timeouts != null ~}
+    timeouts${site.timeouts.matcher != "" ? " ${site.timeouts.matcher}" : ""} {
+%{if site.timeouts.read_timeout != "" ~}
+        read_timeout ${site.timeouts.read_timeout}
+%{endif ~}
+%{if site.timeouts.write_timeout != "" ~}
+        write_timeout ${site.timeouts.write_timeout}
+%{endif ~}
+%{if site.timeouts.max_write_chunk != null ~}
+        max_write_chunk ${site.timeouts.max_write_chunk}
+%{endif ~}
+    }
+%{endif ~}
+%{for rd in site.redirects ~}
+    redir${rd.matcher != "" ? " ${rd.matcher}" : ""} ${rd.to}${rd.code != "" ? " ${rd.code}" : ""}
+%{endfor ~}
+%{for mth in site.methods ~}
+    method${mth.matcher != "" ? " ${mth.matcher}" : ""} ${mth.method}
+%{endfor ~}
+%{for rw in site.rewrites ~}
+    rewrite${rw.matcher != "" ? " ${rw.matcher}" : ""} ${rw.to}
+%{endfor ~}
+%{for u in site.uris ~}
+    uri${u.matcher != "" ? " ${u.matcher}" : ""} ${u.op} ${u.target}${u.replacement != "" ? " ${u.replacement}" : ""}${u.limit != null ? " ${u.limit}" : ""}
+%{endfor ~}
+%{if site.try_files != null ~}
+%{if site.try_files.policy != "" ~}
+    try_files%{for f in site.try_files.files} ${f}%{endfor} {
+        policy ${site.try_files.policy}
+    }
+%{else ~}
+    try_files%{for f in site.try_files.files} ${f}%{endfor}
+%{endif ~}
+%{endif ~}
+%{for ba in site.basic_auth ~}
+    basic_auth${ba.matcher != "" ? " ${ba.matcher}" : ""}${ba.hash_algorithm != "" ? " ${ba.hash_algorithm}" : ""}${ba.realm != "" ? " ${ba.realm}" : ""} {
+%{for user, pass in ba.users ~}
+        ${user} ${pass}
+%{endfor ~}
+    }
+%{endfor ~}
+%{for fa in site.forward_auth ~}
+    forward_auth${fa.matcher != "" ? " ${fa.matcher}" : ""}%{for up in fa.upstreams} ${up}%{endfor} {
+        uri ${fa.uri}
+%{if [for ch in fa.copy_headers : ch] != [] ~}
+        copy_headers%{for ch in fa.copy_headers} ${ch}%{endfor}
+%{endif ~}
+%{for hk, hv in fa.header_up ~}
+        header_up ${hk} "${hv}"
+%{endfor ~}
+%{if fa.tls_insecure_skip_verify ~}
+        transport http {
+            tls_insecure_skip_verify
+        }
+%{endif ~}
+    }
+%{endfor ~}
+%{if site.encode != null ~}
+    encode${site.encode.matcher != "" ? " ${site.encode.matcher}" : ""}%{for fmt in site.encode.formats} ${fmt}%{endfor} {
+%{if site.encode.gzip_level != null ~}
+        gzip ${site.encode.gzip_level}
+%{endif ~}
+%{if site.encode.zstd_level != "" || site.encode.zstd_disable_checksum ~}
+        zstd${site.encode.zstd_level != "" ? " ${site.encode.zstd_level}" : ""} {
+%{if site.encode.zstd_disable_checksum ~}
+            disable_checksum
+%{endif ~}
+        }
+%{endif ~}
+%{if site.encode.minimum_length != null ~}
+        minimum_length ${site.encode.minimum_length}
+%{endif ~}
+%{if [for st in site.encode.match_status : st] != [] || [for hk, _ in site.encode.match_headers : hk] != [] ~}
+        match {
+%{if [for st in site.encode.match_status : st] != [] ~}
+            status%{for st in site.encode.match_status} ${st}%{endfor}
+%{endif ~}
+%{for hk, hv in site.encode.match_headers ~}
+            header ${hk} ${hv}
+%{endfor ~}
+        }
+%{endif ~}
+    }
+%{else ~}
+%{if features.encode ~}
+    encode zstd gzip
+%{endif ~}
+%{endif ~}
+%{if site.push != null ~}
+    push${site.push.matcher != "" ? " ${site.push.matcher}" : ""} {
+%{for res in site.push.resources ~}
+        ${res}
+%{endfor ~}
+%{if [for hk, _ in site.push.headers_set : hk] != [] || [for hd in site.push.headers_delete : hd] != [] ~}
+        headers {
+%{for hk, hv in site.push.headers_set ~}
+            ${hk} "${hv}"
+%{endfor ~}
+%{for hd in site.push.headers_delete ~}
+            -${hd}
+%{endfor ~}
+        }
+%{endif ~}
+    }
+%{endif ~}
+%{if site.templates != null ~}
+    templates${site.templates.matcher != "" ? " ${site.templates.matcher}" : ""} {
+%{if [for m in site.templates.mime : m] != [] ~}
+        mime%{for m in site.templates.mime} ${m}%{endfor}
+%{endif ~}
+%{if site.templates.between_open != "" ~}
+        between ${site.templates.between_open} ${site.templates.between_close}
+%{endif ~}
+%{if site.templates.root != "" ~}
+        root ${site.templates.root}
+%{endif ~}
+%{if [for ext in site.templates.extensions : ext] != [] ~}
+        extensions%{for ext in site.templates.extensions} ${ext}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if site.tracing != null ~}
+    tracing${site.tracing.matcher != "" ? " ${site.tracing.matcher}" : ""} {
+        span ${site.tracing.span}
+%{if [for ak, _ in site.tracing.span_attributes : ak] != [] ~}
+        span_attributes {
+%{for ak, av in site.tracing.span_attributes ~}
+            ${ak} "${av}"
+%{endfor ~}
+        }
+%{endif ~}
+    }
+%{endif ~}
+%{if site.intercept != null ~}
+    intercept${site.intercept.matcher != "" ? " ${site.intercept.matcher}" : ""} {
+%{for rs in site.intercept.replace_status ~}
+        replace_status${rs.matcher != "" ? " ${rs.matcher}" : ""} ${rs.status_code}
+%{endfor ~}
+    }
+%{endif ~}
+%{for inv in site.invoke ~}
+    invoke${inv.matcher != "" ? " ${inv.matcher}" : ""} ${inv.name}
+%{endfor ~}
+%{if site.upstream != "" ~}
+%{if site.path_prefix != "" ~}
+    handle_path ${site.path_prefix}* {
+        reverse_proxy ${site.upstream}
+    }
+%{else ~}
+    reverse_proxy ${site.upstream}
+%{endif ~}
+%{endif ~}
+%{if site.upstream_port != null ~}
+%{if site.path_prefix != "" ~}
+    handle_path ${site.path_prefix}* {
+        reverse_proxy 127.0.0.1:${site.upstream_port}
+    }
+%{else ~}
+    reverse_proxy 127.0.0.1:${site.upstream_port}
+%{endif ~}
+%{endif ~}
+%{if [for up in site.upstreams : up] != [] ~}
+%{if site.path_prefix != "" ~}
+    handle_path ${site.path_prefix}* {
+        reverse_proxy%{for up in site.upstreams} ${up}%{endfor}
+    }
+%{else ~}
+    reverse_proxy%{for up in site.upstreams} ${up}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if site.reverse_proxy != null ~}
+    reverse_proxy${site.reverse_proxy.matcher != "" ? " ${site.reverse_proxy.matcher}" : ""}%{for up in site.reverse_proxy.to} ${up}%{endfor} {
+%{if site.reverse_proxy.dynamic_srv != null ~}
+        dynamic srv {
+%{if site.reverse_proxy.dynamic_srv.service != "" ~}
+            service ${site.reverse_proxy.dynamic_srv.service}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_srv.proto != "" ~}
+            proto ${site.reverse_proxy.dynamic_srv.proto}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_srv.name != "" ~}
+            name ${site.reverse_proxy.dynamic_srv.name}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_srv.refresh != "" ~}
+            refresh ${site.reverse_proxy.dynamic_srv.refresh}
+%{endif ~}
+%{if [for r in site.reverse_proxy.dynamic_srv.resolvers : r] != [] ~}
+            resolvers%{for r in site.reverse_proxy.dynamic_srv.resolvers} ${r}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_srv.dial_timeout != "" ~}
+            dial_timeout ${site.reverse_proxy.dynamic_srv.dial_timeout}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_srv.dial_fallback_delay != "" ~}
+            dial_fallback_delay ${site.reverse_proxy.dynamic_srv.dial_fallback_delay}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_srv.grace_period != "" ~}
+            grace_period ${site.reverse_proxy.dynamic_srv.grace_period}
+%{endif ~}
+        }
+%{endif ~}
+%{if site.reverse_proxy.dynamic_a != null ~}
+        dynamic a {
+            name ${site.reverse_proxy.dynamic_a.name}
+            port ${site.reverse_proxy.dynamic_a.port}
+%{if site.reverse_proxy.dynamic_a.refresh != "" ~}
+            refresh ${site.reverse_proxy.dynamic_a.refresh}
+%{endif ~}
+%{if [for r in site.reverse_proxy.dynamic_a.resolvers : r] != [] ~}
+            resolvers%{for r in site.reverse_proxy.dynamic_a.resolvers} ${r}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_a.dial_timeout != "" ~}
+            dial_timeout ${site.reverse_proxy.dynamic_a.dial_timeout}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_a.dial_fallback_delay != "" ~}
+            dial_fallback_delay ${site.reverse_proxy.dynamic_a.dial_fallback_delay}
+%{endif ~}
+%{if site.reverse_proxy.dynamic_a.ipv4 || site.reverse_proxy.dynamic_a.ipv6 ~}
+            versions${site.reverse_proxy.dynamic_a.ipv4 ? " ipv4" : ""}${site.reverse_proxy.dynamic_a.ipv6 ? " ipv6" : ""}
+%{endif ~}
+        }
+%{endif ~}
+%{if site.reverse_proxy.lb_policy != "" ~}
+        lb_policy ${site.reverse_proxy.lb_policy}
+%{endif ~}
+%{if site.reverse_proxy.lb_retries != null ~}
+        lb_retries ${site.reverse_proxy.lb_retries}
+%{endif ~}
+%{if site.reverse_proxy.lb_try_duration != "" ~}
+        lb_try_duration ${site.reverse_proxy.lb_try_duration}
+%{endif ~}
+%{if site.reverse_proxy.lb_try_interval != "" ~}
+        lb_try_interval ${site.reverse_proxy.lb_try_interval}
+%{endif ~}
+%{if site.reverse_proxy.lb_retry_match != "" ~}
+        lb_retry_match ${site.reverse_proxy.lb_retry_match}
+%{endif ~}
+%{if site.reverse_proxy.health_uri != "" ~}
+        health_uri ${site.reverse_proxy.health_uri}
+%{endif ~}
+%{if site.reverse_proxy.health_port != null ~}
+        health_port ${site.reverse_proxy.health_port}
+%{endif ~}
+%{if site.reverse_proxy.health_interval != "" ~}
+        health_interval ${site.reverse_proxy.health_interval}
+%{endif ~}
+%{if site.reverse_proxy.health_passes != null ~}
+        health_passes ${site.reverse_proxy.health_passes}
+%{endif ~}
+%{if site.reverse_proxy.health_fails != null ~}
+        health_fails ${site.reverse_proxy.health_fails}
+%{endif ~}
+%{if site.reverse_proxy.health_timeout != "" ~}
+        health_timeout ${site.reverse_proxy.health_timeout}
+%{endif ~}
+%{if site.reverse_proxy.health_status != "" ~}
+        health_status ${site.reverse_proxy.health_status}
+%{endif ~}
+%{if site.reverse_proxy.health_body != "" ~}
+        health_body "${site.reverse_proxy.health_body}"
+%{endif ~}
+%{if site.reverse_proxy.health_method != "" ~}
+        health_method ${site.reverse_proxy.health_method}
+%{endif ~}
+%{if site.reverse_proxy.health_request_body != "" ~}
+        health_request_body "${site.reverse_proxy.health_request_body}"
+%{endif ~}
+%{if site.reverse_proxy.health_follow_redirects ~}
+        health_follow_redirects
+%{endif ~}
+%{if [for hk, _ in site.reverse_proxy.health_headers : hk] != [] ~}
+        health_headers {
+%{for hk, hv in site.reverse_proxy.health_headers ~}
+            ${hk} "${hv}"
+%{endfor ~}
+        }
+%{endif ~}
+%{if site.reverse_proxy.fail_duration != "" ~}
+        fail_duration ${site.reverse_proxy.fail_duration}
+%{endif ~}
+%{if site.reverse_proxy.max_fails != null ~}
+        max_fails ${site.reverse_proxy.max_fails}
+%{endif ~}
+%{if site.reverse_proxy.unhealthy_status != "" ~}
+        unhealthy_status ${site.reverse_proxy.unhealthy_status}
+%{endif ~}
+%{if site.reverse_proxy.unhealthy_latency != "" ~}
+        unhealthy_latency ${site.reverse_proxy.unhealthy_latency}
+%{endif ~}
+%{if site.reverse_proxy.unhealthy_request_count != null ~}
+        unhealthy_request_count ${site.reverse_proxy.unhealthy_request_count}
+%{endif ~}
+%{if site.reverse_proxy.flush_interval != "" ~}
+        flush_interval ${site.reverse_proxy.flush_interval}
+%{endif ~}
+%{if site.reverse_proxy.request_buffers != "" ~}
+        request_buffers ${site.reverse_proxy.request_buffers}
+%{endif ~}
+%{if site.reverse_proxy.response_buffers != "" ~}
+        response_buffers ${site.reverse_proxy.response_buffers}
+%{endif ~}
+%{if site.reverse_proxy.stream_buffer_size != "" ~}
+        stream_buffer_size ${site.reverse_proxy.stream_buffer_size}
+%{endif ~}
+%{if site.reverse_proxy.stream_timeout != "" ~}
+        stream_timeout ${site.reverse_proxy.stream_timeout}
+%{endif ~}
+%{if site.reverse_proxy.stream_close_delay != "" ~}
+        stream_close_delay ${site.reverse_proxy.stream_close_delay}
+%{endif ~}
+%{if site.reverse_proxy.proxy_status_name != "" ~}
+        proxy_status_name ${site.reverse_proxy.proxy_status_name}
+%{endif ~}
+%{if site.reverse_proxy.verbose_logs ~}
+        verbose_logs
+%{endif ~}
+%{if site.reverse_proxy.trusted_proxies_private_ranges || [for r in site.reverse_proxy.trusted_proxies : r] != [] ~}
+        trusted_proxies${site.reverse_proxy.trusted_proxies_private_ranges ? " private_ranges" : ""}%{for r in site.reverse_proxy.trusted_proxies} ${r}%{endfor}
+%{endif ~}
+%{for hk, hv in site.reverse_proxy.header_up_set ~}
+        header_up ${hk} "${hv}"
+%{endfor ~}
+%{for hk, hv in site.reverse_proxy.header_up_add ~}
+        header_up +${hk} "${hv}"
+%{endfor ~}
+%{for hk in site.reverse_proxy.header_up_delete ~}
+        header_up -${hk}
+%{endfor ~}
+%{for hk, hv in site.reverse_proxy.header_down_set ~}
+        header_down ${hk} "${hv}"
+%{endfor ~}
+%{for hk, hv in site.reverse_proxy.header_down_add ~}
+        header_down +${hk} "${hv}"
+%{endfor ~}
+%{for hk in site.reverse_proxy.header_down_delete ~}
+        header_down -${hk}
+%{endfor ~}
+%{if site.reverse_proxy.method != "" ~}
+        method ${site.reverse_proxy.method}
+%{endif ~}
+%{if site.reverse_proxy.rewrite != "" ~}
+        rewrite ${site.reverse_proxy.rewrite}
+%{endif ~}
+%{for rs in site.reverse_proxy.replace_status ~}
+        replace_status${rs.matcher != "" ? " ${rs.matcher}" : ""} ${rs.status_code}
+%{endfor ~}
+%{if site.reverse_proxy.transport_http != null ~}
+        transport http {
+%{if site.reverse_proxy.transport_http.read_buffer != "" ~}
+            read_buffer ${site.reverse_proxy.transport_http.read_buffer}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.write_buffer != "" ~}
+            write_buffer ${site.reverse_proxy.transport_http.write_buffer}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.read_timeout != "" ~}
+            read_timeout ${site.reverse_proxy.transport_http.read_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.write_timeout != "" ~}
+            write_timeout ${site.reverse_proxy.transport_http.write_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.max_response_header != "" ~}
+            max_response_header ${site.reverse_proxy.transport_http.max_response_header}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.proxy_protocol != "" ~}
+            proxy_protocol ${site.reverse_proxy.transport_http.proxy_protocol}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.forward_proxy_url != "" ~}
+            forward_proxy_url ${site.reverse_proxy.transport_http.forward_proxy_url}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.dial_timeout != "" ~}
+            dial_timeout ${site.reverse_proxy.transport_http.dial_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.dial_fallback_delay != "" ~}
+            dial_fallback_delay ${site.reverse_proxy.transport_http.dial_fallback_delay}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.response_header_timeout != "" ~}
+            response_header_timeout ${site.reverse_proxy.transport_http.response_header_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.expect_continue_timeout != "" ~}
+            expect_continue_timeout ${site.reverse_proxy.transport_http.expect_continue_timeout}
+%{endif ~}
+%{if [for r in site.reverse_proxy.transport_http.resolvers : r] != [] ~}
+            resolvers%{for r in site.reverse_proxy.transport_http.resolvers} ${r}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls ~}
+            tls
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls_client_auth_automate != "" ~}
+            tls_client_auth ${site.reverse_proxy.transport_http.tls_client_auth_automate}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls_client_auth_cert != "" ~}
+            tls_client_auth ${site.reverse_proxy.transport_http.tls_client_auth_cert} ${site.reverse_proxy.transport_http.tls_client_auth_key}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls_insecure_skip_verify ~}
+            tls_insecure_skip_verify
+%{endif ~}
+%{if [for c in site.reverse_proxy.transport_http.tls_curves : c] != [] ~}
+            tls_curves%{for c in site.reverse_proxy.transport_http.tls_curves} ${c}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls_timeout != "" ~}
+            tls_timeout ${site.reverse_proxy.transport_http.tls_timeout}
+%{endif ~}
+%{if [for f in site.reverse_proxy.transport_http.tls_trusted_ca_certs : f] != [] ~}
+            tls_trusted_ca_certs%{for f in site.reverse_proxy.transport_http.tls_trusted_ca_certs} ${f}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls_server_name != "" ~}
+            tls_server_name ${site.reverse_proxy.transport_http.tls_server_name}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.tls_renegotiation != "" ~}
+            tls_renegotiation ${site.reverse_proxy.transport_http.tls_renegotiation}
+%{endif ~}
+%{if [for p in site.reverse_proxy.transport_http.tls_except_ports : p] != [] ~}
+            tls_except_ports%{for p in site.reverse_proxy.transport_http.tls_except_ports} ${p}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.keepalive != "" ~}
+            keepalive ${site.reverse_proxy.transport_http.keepalive}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.keepalive_interval != "" ~}
+            keepalive_interval ${site.reverse_proxy.transport_http.keepalive_interval}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.keepalive_idle_conns != null ~}
+            keepalive_idle_conns ${site.reverse_proxy.transport_http.keepalive_idle_conns}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.keepalive_idle_conns_per_host != null ~}
+            keepalive_idle_conns_per_host ${site.reverse_proxy.transport_http.keepalive_idle_conns_per_host}
+%{endif ~}
+%{if [for v in site.reverse_proxy.transport_http.versions : v] != [] ~}
+            versions%{for v in site.reverse_proxy.transport_http.versions} ${v}%{endfor}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.compression_off ~}
+            compression off
+%{endif ~}
+%{if site.reverse_proxy.transport_http.max_conns_per_host != null ~}
+            max_conns_per_host ${site.reverse_proxy.transport_http.max_conns_per_host}
+%{endif ~}
+%{if site.reverse_proxy.transport_http.local_address != "" ~}
+            local_address ${site.reverse_proxy.transport_http.local_address}
+%{endif ~}
+        }
+%{endif ~}
+%{if site.reverse_proxy.transport_fastcgi != null ~}
+        transport fastcgi {
+%{if site.reverse_proxy.transport_fastcgi.root != "" ~}
+            root ${site.reverse_proxy.transport_fastcgi.root}
+%{endif ~}
+%{if site.reverse_proxy.transport_fastcgi.split != "" ~}
+            split ${site.reverse_proxy.transport_fastcgi.split}
+%{endif ~}
+%{for ek, ev in site.reverse_proxy.transport_fastcgi.env ~}
+            env ${ek} "${ev}"
+%{endfor ~}
+%{if site.reverse_proxy.transport_fastcgi.resolve_root_symlink ~}
+            resolve_root_symlink
+%{endif ~}
+%{if site.reverse_proxy.transport_fastcgi.dial_timeout != "" ~}
+            dial_timeout ${site.reverse_proxy.transport_fastcgi.dial_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_fastcgi.read_timeout != "" ~}
+            read_timeout ${site.reverse_proxy.transport_fastcgi.read_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_fastcgi.write_timeout != "" ~}
+            write_timeout ${site.reverse_proxy.transport_fastcgi.write_timeout}
+%{endif ~}
+%{if site.reverse_proxy.transport_fastcgi.capture_stderr ~}
+            capture_stderr
+%{endif ~}
+        }
+%{endif ~}
+    }
+%{endif ~}
+%{for rp in site.reverse_proxies ~}
+    reverse_proxy${rp.matcher != "" ? " ${rp.matcher}" : ""}%{for up in rp.to} ${up}%{endfor} {
+%{if rp.lb_policy != "" ~}
+        lb_policy ${rp.lb_policy}
+%{endif ~}
+%{if rp.health_uri != "" ~}
+        health_uri ${rp.health_uri}
+%{endif ~}
+%{for hk, hv in rp.header_up_set ~}
+        header_up ${hk} "${hv}"
+%{endfor ~}
+%{for hk, hv in rp.header_down_set ~}
+        header_down ${hk} "${hv}"
+%{endfor ~}
+%{if rp.flush_interval != "" ~}
+        flush_interval ${rp.flush_interval}
+%{endif ~}
+    }
+%{endfor ~}
+%{if site.php_fastcgi != null ~}
+    php_fastcgi${site.php_fastcgi.matcher != "" ? " ${site.php_fastcgi.matcher}" : ""}%{for up in site.php_fastcgi.upstreams} ${up}%{endfor} {
+%{if site.php_fastcgi.root != "" ~}
+        root ${site.php_fastcgi.root}
+%{endif ~}
+%{if site.php_fastcgi.split != "" ~}
+        split ${site.php_fastcgi.split}
+%{endif ~}
+%{for ek, ev in site.php_fastcgi.env ~}
+        env ${ek} "${ev}"
+%{endfor ~}
+%{if site.php_fastcgi.index != "" ~}
+        index ${site.php_fastcgi.index}
+%{endif ~}
+%{if [for tf in site.php_fastcgi.try_files : tf] != [] ~}
+        try_files%{for tf in site.php_fastcgi.try_files} ${tf}%{endfor}
+%{endif ~}
+%{if site.php_fastcgi.resolve_root_symlink ~}
+        resolve_root_symlink
+%{endif ~}
+%{if site.php_fastcgi.dial_timeout != "" ~}
+        dial_timeout ${site.php_fastcgi.dial_timeout}
+%{endif ~}
+%{if site.php_fastcgi.read_timeout != "" ~}
+        read_timeout ${site.php_fastcgi.read_timeout}
+%{endif ~}
+%{if site.php_fastcgi.write_timeout != "" ~}
+        write_timeout ${site.php_fastcgi.write_timeout}
+%{endif ~}
+%{if site.php_fastcgi.capture_stderr ~}
+        capture_stderr
+%{endif ~}
+    }
+%{endif ~}
+%{if site.file_server != null && site.file_server.enabled ~}
+    file_server${site.file_server.matcher != "" ? " ${site.file_server.matcher}" : ""} {
+%{if site.file_server.fs != "" ~}
+        fs ${site.file_server.fs}
+%{endif ~}
+%{if site.file_server.root != "" ~}
+        root ${site.file_server.root}
+%{endif ~}
+%{if [for h in site.file_server.hide : h] != [] ~}
+        hide%{for h in site.file_server.hide} ${h}%{endfor}
+%{endif ~}
+%{if [for idx in site.file_server.index : idx] != [] ~}
+        index%{for idx in site.file_server.index} ${idx}%{endfor}
+%{endif ~}
+%{if site.file_server.browse ~}
+        browse${site.file_server.browse_template != "" ? " ${site.file_server.browse_template}" : ""}
+%{endif ~}
+%{if site.file_server.reveal_symlinks ~}
+        reveal_symlinks
+%{endif ~}
+%{if site.file_server.sort != "" ~}
+        sort ${site.file_server.sort}
+%{endif ~}
+%{if site.file_server.file_limit != null ~}
+        file_limit ${site.file_server.file_limit}
+%{endif ~}
+%{if [for pc in site.file_server.precompressed : pc] != [] ~}
+        precompressed%{for pc in site.file_server.precompressed} ${pc}%{endfor}
+%{endif ~}
+%{if site.file_server.status != "" ~}
+        status ${site.file_server.status}
+%{endif ~}
+%{if site.file_server.disable_canonical_uris ~}
+        disable_canonical_uris
+%{endif ~}
+%{if site.file_server.pass_thru ~}
+        pass_thru
+%{endif ~}
+%{if [for ext in site.file_server.etag_file_extensions : ext] != [] ~}
+        etag_file_extensions%{for ext in site.file_server.etag_file_extensions} ${ext}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{for rsp in site.responds ~}
+    respond${rsp.matcher != "" ? " ${rsp.matcher}" : ""}${rsp.status != null ? " ${rsp.status}" : ""} {
+%{if rsp.body != "" ~}
+        body "${rsp.body}"
+%{endif ~}
+%{if rsp.close ~}
+        close
+%{endif ~}
+    }
+%{endfor ~}
+%{for err in site.errors ~}
+    error${err.matcher != "" ? " ${err.matcher}" : ""}${err.status != null ? " ${err.status}" : ""} {
+%{if err.message != "" ~}
+        message "${err.message}"
+%{endif ~}
+    }
+%{endfor ~}
+%{for ab in site.aborts ~}
+    abort${ab != "*" && ab != "" ? " ${ab}" : ""}
+%{endfor ~}
+%{if site.metrics != null && site.metrics.enabled ~}
+    metrics${site.metrics.matcher != "" ? " ${site.metrics.matcher}" : ""}%{if site.metrics.disable_openmetrics} {
+        disable_openmetrics
+    }%{endif}
+%{endif ~}
+%{if site.acme_server != null ~}
+    acme_server${site.acme_server.matcher != "" ? " ${site.acme_server.matcher}" : ""} {
+%{if site.acme_server.ca != "" ~}
+        ca ${site.acme_server.ca}
+%{endif ~}
+%{if site.acme_server.lifetime != "" ~}
+        lifetime ${site.acme_server.lifetime}
+%{endif ~}
+%{if [for r in site.acme_server.resolvers : r] != [] ~}
+        resolvers%{for r in site.acme_server.resolvers} ${r}%{endfor}
+%{endif ~}
+%{if [for ch in site.acme_server.challenges : ch] != [] ~}
+        challenges%{for ch in site.acme_server.challenges} ${ch}%{endfor}
+%{endif ~}
+%{if site.acme_server.allow_wildcard_names ~}
+        allow_wildcard_names
+%{endif ~}
+%{if [for d in site.acme_server.allow_domains : d] != [] || [for ip in site.acme_server.allow_ip_ranges : ip] != [] ~}
+        allow {
+%{if [for d in site.acme_server.allow_domains : d] != [] ~}
+            domains%{for d in site.acme_server.allow_domains} ${d}%{endfor}
+%{endif ~}
+%{if [for ip in site.acme_server.allow_ip_ranges : ip] != [] ~}
+            ip_ranges%{for ip in site.acme_server.allow_ip_ranges} ${ip}%{endfor}
+%{endif ~}
+        }
+%{endif ~}
+%{if [for d in site.acme_server.deny_domains : d] != [] || [for ip in site.acme_server.deny_ip_ranges : ip] != [] ~}
+        deny {
+%{if [for d in site.acme_server.deny_domains : d] != [] ~}
+            domains%{for d in site.acme_server.deny_domains} ${d}%{endfor}
+%{endif ~}
+%{if [for ip in site.acme_server.deny_ip_ranges : ip] != [] ~}
+            ip_ranges%{for ip in site.acme_server.deny_ip_ranges} ${ip}%{endfor}
+%{endif ~}
+        }
+%{endif ~}
+%{if site.acme_server.sign_with_root ~}
+        sign_with_root
+%{endif ~}
+    }
+%{endif ~}
+%{for hdl in site.handles ~}
+    handle${hdl.matcher != "" ? " ${hdl.matcher}" : ""} {
+%{for hk, hv in hdl.headers_set ~}
+        header ${hk} "${hv}"
+%{endfor ~}
+%{if hdl.strip_prefix != "" ~}
+        uri strip_prefix ${hdl.strip_prefix}
+%{endif ~}
+%{if hdl.rewrite_to != "" ~}
+        rewrite * ${hdl.rewrite_to}
+%{endif ~}
+%{if hdl.redir_to != "" ~}
+        redir * ${hdl.redir_to}${hdl.redir_code != "" ? " ${hdl.redir_code}" : ""}
+%{endif ~}
+%{if hdl.root != "" ~}
+        root * ${hdl.root}
+%{endif ~}
+%{if [for up in hdl.reverse_proxy_to : up] != [] ~}
+        reverse_proxy%{for up in hdl.reverse_proxy_to} ${up}%{endfor}
+%{endif ~}
+%{if hdl.file_server ~}
+        file_server
+%{endif ~}
+%{if hdl.respond_body != "" || hdl.respond_status != null ~}
+        respond${hdl.respond_body != "" ? " \"${hdl.respond_body}\"" : ""}${hdl.respond_status != null ? " ${hdl.respond_status}" : ""}
+%{endif ~}
+    }
+%{endfor ~}
+%{for hp in site.handle_paths ~}
+    handle_path ${hp.path} {
+%{for hk, hv in hp.headers_set ~}
+        header ${hk} "${hv}"
+%{endfor ~}
+%{if hp.rewrite_to != "" ~}
+        rewrite * ${hp.rewrite_to}
+%{endif ~}
+%{if hp.redir_to != "" ~}
+        redir * ${hp.redir_to}${hp.redir_code != "" ? " ${hp.redir_code}" : ""}
+%{endif ~}
+%{if hp.root != "" ~}
+        root * ${hp.root}
+%{endif ~}
+%{if [for up in hp.reverse_proxy_to : up] != [] ~}
+        reverse_proxy%{for up in hp.reverse_proxy_to} ${up}%{endfor}
+%{endif ~}
+%{if hp.file_server ~}
+        file_server
+%{endif ~}
+%{if hp.respond_body != "" || hp.respond_status != null ~}
+        respond${hp.respond_body != "" ? " \"${hp.respond_body}\"" : ""}${hp.respond_status != null ? " ${hp.respond_status}" : ""}
+%{endif ~}
+    }
+%{endfor ~}
+%{for rt in site.routes ~}
+    route${rt.matcher != "" ? " ${rt.matcher}" : ""} {
+%{for hk, hv in rt.headers_set ~}
+        header ${hk} "${hv}"
+%{endfor ~}
+%{if rt.strip_prefix != "" ~}
+        uri strip_prefix ${rt.strip_prefix}
+%{endif ~}
+%{if rt.rewrite_to != "" ~}
+        rewrite * ${rt.rewrite_to}
+%{endif ~}
+%{if rt.redir_to != "" ~}
+        redir * ${rt.redir_to}${rt.redir_code != "" ? " ${rt.redir_code}" : ""}
+%{endif ~}
+%{if rt.root != "" ~}
+        root * ${rt.root}
+%{endif ~}
+%{if [for up in rt.reverse_proxy_to : up] != [] ~}
+        reverse_proxy%{for up in rt.reverse_proxy_to} ${up}%{endfor}
+%{endif ~}
+%{if rt.file_server ~}
+        file_server
+%{endif ~}
+%{if rt.respond_body != "" || rt.respond_status != null ~}
+        respond${rt.respond_body != "" ? " \"${rt.respond_body}\"" : ""}${rt.respond_status != null ? " ${rt.respond_status}" : ""}
+%{endif ~}
+    }
+%{endfor ~}
+%{for he in site.handle_errors ~}
+    handle_errors%{for sc in he.status_codes} ${sc}%{endfor} {
+%{for hk, hv in he.headers_set ~}
+        header ${hk} "${hv}"
+%{endfor ~}
+%{if he.rewrite_to != "" ~}
+        rewrite * ${he.rewrite_to}
+%{endif ~}
+%{if [for up in he.reverse_proxy_to : up] != [] ~}
+        reverse_proxy%{for up in he.reverse_proxy_to} ${up}%{endfor}
+%{endif ~}
+%{if he.file_server ~}
+        file_server
+%{endif ~}
+%{if he.respond_body != "" || he.respond_status != null ~}
+        respond${he.respond_body != "" ? " \"${he.respond_body}\"" : ""}${he.respond_status != null ? " ${he.respond_status}" : ""}
+%{endif ~}
+    }
+%{endfor ~}
+%{for raw in site.extra_directives ~}
+    ${raw}
+%{endfor ~}
+}
+%{endfor ~}
+EOF
+            }
+
+            file "site-base" {
+                path = "${fs::etc()}/sites/10-base.caddy"
+                body = "# managed by zordon caddy package\n"
+            }
+
+            file "site-dns" {
+                enabled = features.dns
+                path    = "${fs::etc()}/sites/20-dns.caddy"
+                body    = <<-EOF
+handle_path /dns/* {
+    reverse_proxy {
+        dynamic a {
+            name health.${package.coredns.outputs.zone}
+            port ${self.vars.http}
+            resolvers ${package.coredns.outputs.dns}
+        }
+    }
+}
+EOF
+            }
+
+            build {
+                cmd = ["go", "build", "-o", "${fs::bin()}/caddy", "./cmd/caddy"]
+            }
+
+            arguments {
+                options {
+                    prefix    = "--"
+                    separator = "="
+                }
+                values = {
+                    main = {
+                        config   = self.file.caddyfile.path
+                        adapter  = inputs.adapter
+                        environ  = inputs.environ
+                        resume   = inputs.resume
+                        watch    = features.watch || inputs.watch
+                        pidfile  = inputs.pidfile
+                        pingback = inputs.pingback
+                    }
+                }
+            }
+
+            runtime {
+                cmd = ["${fs::bin()}/caddy", "run", tpl::render::flags("main")]
+            }
+
+            readiness {
+                http {
+                    port = self.vars.http
+                    path = "/healthz"
+                }
+                period            = "200ms"
+                failure_threshold = 50
+            }
+        }
+    }
+}

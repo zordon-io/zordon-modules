@@ -1,0 +1,2924 @@
+package "coredns" {
+    features = {
+        resolver = {
+            description = "Writes /etc/resolver/<zone> with sudo (macOS), so the host resolves *.<zone> through CoreDNS."
+        }
+        metrics = {
+            description = "Enables the Prometheus metrics endpoint (/metrics) on the primary server block."
+        }
+        health = {
+            description = "Enables the HTTP health check endpoint (/health) on the primary server block."
+        }
+        pprof = {
+            description = "Enables the runtime pprof profiling HTTP server (/debug/pprof) on the primary server block."
+        }
+        log = {
+            description = "Enables DNS query logging on the primary server block."
+        }
+        debug = {
+            description = "Disables panic recovery and enables debug logging globally."
+        }
+        reload = {
+            description = "Enables automatic graceful reload when the Corefile changes."
+        }
+        loop = {
+            description = "Enables forwarding loop detection on the primary server block."
+        }
+        shed = {
+            description = "Enables UDP response write serialization and overload shedding on the primary server block."
+        }
+        local = {
+            description = "Responds locally to localhost and reverse loopback queries without forwarding upstream."
+        }
+        any = {
+            description = "Blocks ANY queries with a minimal RFC 8482 HINFO response on the primary server block."
+        }
+        minimal = {
+            description = "Minimizes DNS response sizes by omitting unnecessary AUTHORITY and ADDITIONAL records."
+        }
+        whoami = {
+            description = "Responds with the client's IP address, port, and transport in the ADDITIONAL section."
+        }
+    }
+
+    inputs = {
+        port = {
+            description = "UDP and TCP port CoreDNS listens on (-dns.port). Fixed by default so /etc/resolver/<zone> remains valid across restarts."
+            type        = number
+            default     = 49564
+        }
+        dns_port = {
+            description = "Optional override for port; when set, takes precedence over inputs.port."
+            type        = number
+            default     = null
+        }
+        ready_port = {
+            description = "HTTP port for the ready plugin (/ready) used by readiness probes."
+            type        = number
+            default     = net::pickport()
+        }
+        health_port = {
+            description = "HTTP port for the health plugin (/health) when enabled."
+            type        = number
+            default     = net::pickport()
+        }
+        metrics_port = {
+            description = "HTTP port for the prometheus metrics plugin (/metrics) when enabled."
+            type        = number
+            default     = net::pickport()
+        }
+        pprof_port = {
+            description = "HTTP port for the pprof profiling plugin (/debug/pprof) when enabled."
+            type        = number
+            default     = net::pickport()
+        }
+        zone = {
+            description = "Primary DNS zone served by the default server block and registered in /etc/resolver."
+            type        = string
+            default     = "test"
+        }
+        zones = {
+            description = "Additional DNS zones served by the primary server block alongside inputs.zone."
+            type        = list(string)
+            default     = []
+        }
+        transport = {
+            description = "Transport scheme prefix for the primary server block (dns, tls, https, https3, quic, or grpc)."
+            type        = string
+            default     = ""
+        }
+        quiet = {
+            description = "Suppresses the startup stanza output (-quiet)."
+            type        = bool
+            default     = false
+        }
+        log_format = {
+            description = "Process log output format (-log-format): text or json."
+            type        = string
+            default     = "text"
+        }
+        pidfile = {
+            description = "Path to write the CoreDNS PID file (-pidfile)."
+            type        = string
+            default     = ""
+        }
+        loopback_fallback = {
+            description = "Synthesizes loopback A and AAAA responses via the template plugin on the primary server block when no custom templates, records, hosts, forwards, or zone backends are configured."
+            type        = bool
+            default     = true
+        }
+        loopback_ipv4 = {
+            description = "IPv4 address returned by the default loopback fallback template for A queries."
+            type        = string
+            default     = "127.0.0.1"
+        }
+        loopback_ipv6 = {
+            description = "IPv6 address returned by the default loopback fallback template for AAAA queries."
+            type        = string
+            default     = "::1"
+        }
+        loopback_ttl = {
+            description = "TTL in seconds for records synthesized by the default loopback fallback template."
+            type        = number
+            default     = 60
+        }
+        snippets = {
+            description = "Named reusable Corefile snippet bodies rendered as (name) { ... } blocks at the top of the Corefile."
+            type        = map(string)
+            default     = {}
+        }
+        imports = {
+            description = "Snippet names to import into the primary server block."
+            type        = list(string)
+            default     = []
+        }
+        hosts = {
+            description = "Static host entries merged into the hosts plugin of the primary server block; the map key is used as the primary hostname alongside any aliases in hostnames."
+            type = map(object({
+                ip        = string
+                hostnames = optional(list(string), [])
+            }))
+            default = {}
+        }
+        records = {
+            description = "Static DNS resource records served on the primary server block via template rules."
+            type = map(object({
+                name  = string
+                type  = optional(string, "A")
+                class = optional(string, "IN")
+                ttl   = optional(number, 60)
+                data  = string
+            }))
+            default = {}
+        }
+        rewrites = {
+            description = "Named rewrite rules (without the leading 'rewrite' keyword) applied on the primary server block."
+            type        = map(string)
+            default     = {}
+        }
+        templates = {
+            description = "Named template plugin blocks applied on the primary server block."
+            type = map(object({
+                class             = optional(string, "IN")
+                type              = optional(string, "ANY")
+                zones             = optional(list(string), [])
+                regex             = optional(string, ".*")
+                answer            = optional(list(string), [])
+                additional        = optional(list(string), [])
+                authority         = optional(list(string), [])
+                rcode             = optional(string, "")
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+                upstream          = optional(string, "")
+            }))
+            default = {}
+        }
+        forwards = {
+            description = "Named forward plugin blocks applied on the primary server block."
+            type = map(object({
+                from                             = optional(string, ".")
+                to                               = list(string)
+                except                           = optional(list(string), [])
+                force_tcp                        = optional(bool, false)
+                prefer_udp                       = optional(bool, false)
+                expire                           = optional(string, "")
+                max_fails                        = optional(number)
+                tls_cert                         = optional(string, "")
+                tls_key                          = optional(string, "")
+                tls_ca                           = optional(string, "")
+                tls_servername                   = optional(string, "")
+                policy                           = optional(string, "")
+                health_check                     = optional(string, "")
+                health_check_domain              = optional(string, "")
+                dnstap                           = optional(bool, false)
+                max_concurrent                   = optional(number)
+                next                             = optional(list(string), [])
+                failfast_all_unhealthy_upstreams = optional(bool, false)
+                failovers                        = optional(list(string), [])
+            }))
+            default = {}
+        }
+        root = {
+            description = "Root directory for file, auto, sign, tls, and dnssec plugins on the primary server block."
+            type        = string
+            default     = ""
+        }
+        metadata = {
+            description = "Enables the metadata collector plugin on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                zones   = optional(list(string), [])
+            })
+            default = null
+        }
+        geoip = {
+            description = "Configures the MaxMind MMDB geoip plugin on the primary server block."
+            type = object({
+                db_file     = string
+                edns_subnet = optional(bool, false)
+            })
+            default = null
+        }
+        cancel = {
+            description = "Configures the request context cancellation timeout plugin on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                timeout = optional(string, "")
+            })
+            default = null
+        }
+        proxyproto = {
+            description = "Configures PROXY protocol v1/v2 support on the primary server block."
+            type = object({
+                allow                             = optional(list(string), [])
+                default                           = optional(string, "")
+                udp_session_tracking_ttl          = optional(string, "")
+                udp_session_tracking_max_sessions = optional(number)
+                tlv_metadata                      = optional(bool, false)
+            })
+            default = null
+        }
+        quic = {
+            description = "Configures DNS-over-QUIC (DoQ) transport parameters on the primary server block."
+            type = object({
+                max_streams      = optional(number)
+                worker_pool_size = optional(number)
+            })
+            default = null
+        }
+        grpc_server = {
+            description = "Configures incoming gRPC server connection and stream limits on the primary server block."
+            type = object({
+                max_streams     = optional(number)
+                max_connections = optional(number)
+            })
+            default = null
+        }
+        https = {
+            description = "Configures DNS-over-HTTPS (DoH) transport options on the primary server block."
+            type = object({
+                max_connections = optional(number)
+                path            = optional(string, "")
+            })
+            default = null
+        }
+        https3 = {
+            description = "Configures DNS-over-HTTP/3 (DoH3) transport options on the primary server block."
+            type = object({
+                max_streams      = optional(number)
+                worker_pool_size = optional(number)
+                path             = optional(string, "")
+            })
+            default = null
+        }
+        timeouts = {
+            description = "Configures TCP, TLS, and DoH read/write/idle timeouts on the primary server block."
+            type = object({
+                read  = optional(string, "")
+                write = optional(string, "")
+                idle  = optional(string, "")
+            })
+            default = null
+        }
+        multisocket = {
+            description = "Configures SO_REUSEPORT multiple listening sockets on the primary server block."
+            type = object({
+                enabled     = optional(bool, true)
+                num_sockets = optional(number)
+            })
+            default = null
+        }
+        reload = {
+            description = "Configures automatic Corefile reload interval and jitter on the primary server block."
+            type = object({
+                enabled  = optional(bool, true)
+                interval = optional(string, "")
+                jitter   = optional(string, "")
+            })
+            default = null
+        }
+        nsid = {
+            description = "Configures RFC 5001 Name Server Identifier (NSID) replies on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                data    = optional(string, "")
+            })
+            default = null
+        }
+        bufsize = {
+            description = "Limits the EDNS0 UDP payload buffer size (512-4096) on the primary server block."
+            type        = number
+            default     = null
+        }
+        bind = {
+            description = "Restricts network interfaces or IP addresses to bind on the primary server block."
+            type = object({
+                addresses = optional(list(string), [])
+                except    = optional(list(string), [])
+            })
+            default = null
+        }
+        debug = {
+            description = "Enables the debug plugin on the primary server block."
+            type        = bool
+            default     = false
+        }
+        trace = {
+            description = "Configures OpenTracing (Zipkin or Datadog) request tracing on the primary server block."
+            type = object({
+                endpoint_type             = optional(string, "")
+                endpoint                  = optional(string, "")
+                every                     = optional(number)
+                service                   = optional(string, "")
+                client_server             = optional(bool, false)
+                datadog_analytics_rate    = optional(number)
+                zipkin_max_backlog_size   = optional(number)
+                zipkin_max_batch_size     = optional(number)
+                zipkin_max_batch_interval = optional(string, "")
+            })
+            default = null
+        }
+        ready = {
+            description = "Overrides the ready plugin configuration on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                address = optional(string, "")
+            })
+            default = null
+        }
+        health = {
+            description = "Configures the HTTP health check plugin on the primary server block."
+            type = object({
+                enabled  = optional(bool, true)
+                address  = optional(string, "")
+                lameduck = optional(string, "")
+            })
+            default = null
+        }
+        pprof = {
+            description = "Configures the runtime profiling HTTP endpoint on the primary server block."
+            type = object({
+                enabled    = optional(bool, true)
+                address    = optional(string, "")
+                block_rate = optional(number)
+            })
+            default = null
+        }
+        shed = {
+            description = "Enables the shed plugin for UDP response serialization and load shedding on the primary server block."
+            type        = bool
+            default     = false
+        }
+        prometheus = {
+            description = "Configures the Prometheus metrics endpoint on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                address = optional(string, "")
+            })
+            default = null
+        }
+        errors = {
+            description = "Configures error logging, log consolidation, and panic recovery on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                consolidations = optional(list(object({
+                    interval   = string
+                    pattern    = string
+                    show_first = optional(bool, false)
+                })), [])
+                stacktrace = optional(bool, false)
+            })
+            default = null
+        }
+        log = {
+            description = "Configures DNS query logging on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                name    = optional(string, "")
+                format  = optional(string, "")
+                classes = optional(list(string), [])
+            })
+            default = null
+        }
+        dnstap = {
+            description = "Configures dnstap binary logging sinks and listeners on the primary server block."
+            type = list(object({
+                socket      = string
+                listen      = optional(bool, false)
+                full        = optional(bool, false)
+                writebuffer = optional(number)
+                queue       = optional(number)
+                identity    = optional(string, "")
+                version     = optional(string, "")
+                extra       = optional(string, "")
+                tls_cert    = optional(string, "")
+                tls_key     = optional(string, "")
+                tls_ca      = optional(string, "")
+                skipverify  = optional(bool, false)
+            }))
+            default = []
+        }
+        local = {
+            description = "Configures local responses for localhost and reverse loopback zones on the primary server block."
+            type = object({
+                enabled          = optional(bool, true)
+                localhost_prefix = optional(string, "")
+            })
+            default = null
+        }
+        dns64 = {
+            description = "Configures DNS64 IPv6 synthesis from IPv4 A records on the primary server block."
+            type = object({
+                zones         = optional(list(string), [])
+                prefix        = optional(string, "")
+                translate_all = optional(bool, false)
+                allow_ipv4    = optional(bool, false)
+            })
+            default = null
+        }
+        siit = {
+            description = "Configures Stateless IP/ICMP Translation (SIIT) algorithmic address mapping on the primary server block."
+            type = object({
+                prefix        = string
+                zones         = optional(list(string), [])
+                translate_all = optional(bool, false)
+            })
+            default = null
+        }
+        any = {
+            description = "Blocks ANY queries with RFC 8482 HINFO responses on the primary server block."
+            type        = bool
+            default     = false
+        }
+        chaos = {
+            description = "Configures CH class TXT responses for version.bind and authors.bind on the primary server block."
+            type = object({
+                enabled = optional(bool, true)
+                version = optional(string, "")
+                authors = optional(list(string), [])
+            })
+            default = null
+        }
+        loadbalance = {
+            description = "Configures round-robin or weighted A/AAAA/MX record reordering and subnet preference on the primary server block."
+            type = object({
+                policy     = optional(string, "round_robin")
+                weightfile = optional(string, "")
+                reload     = optional(string, "")
+                prefer     = optional(list(string), [])
+            })
+            default = null
+        }
+        tsig = {
+            description = "Configures TSIG keys, request validation, and response signing on the primary server block."
+            type = object({
+                zones          = optional(list(string), [])
+                secrets        = optional(map(string), {})
+                secrets_file   = optional(string, "")
+                require        = optional(list(string), [])
+                require_opcode = optional(list(string), [])
+            })
+            default = null
+        }
+        autopath = {
+            description = "Configures server-side search path completion on the primary server block."
+            type = object({
+                zones       = optional(list(string), [])
+                resolv_conf = string
+            })
+            default = null
+        }
+        acl = {
+            description = "Configures access control lists (allow, block, filter, drop) on the primary server block."
+            type = list(object({
+                zones = optional(list(string), [])
+                rules = list(object({
+                    action = string
+                    type   = optional(string, "")
+                    net    = optional(list(string), [])
+                }))
+            }))
+            default = []
+        }
+        cache = {
+            description = "Configures DNS response caching on the primary server block."
+            type = object({
+                ttl                   = optional(number)
+                zones                 = optional(list(string), [])
+                success_capacity      = optional(number)
+                success_ttl           = optional(number)
+                success_min_ttl       = optional(number)
+                denial_capacity       = optional(number)
+                denial_ttl            = optional(number)
+                denial_min_ttl        = optional(number)
+                prefetch_amount       = optional(number)
+                prefetch_duration     = optional(string, "")
+                prefetch_percentage   = optional(number)
+                serve_stale_duration  = optional(string, "")
+                serve_stale_verify    = optional(string, "")
+                servfail              = optional(string, "")
+                disable_success_zones = optional(list(string), [])
+                disable_denial_zones  = optional(list(string), [])
+                keepttl               = optional(bool, false)
+            })
+            default = null
+        }
+        header = {
+            description = "Configures DNS response header flag and rcode modifications on the primary server block."
+            type = list(object({
+                selector = optional(string, "")
+                actions  = list(string)
+            }))
+            default = []
+        }
+        dnssec = {
+            description = "Configures on-the-fly DNSSEC signing on the primary server block."
+            type = object({
+                zones          = optional(list(string), [])
+                key_source     = optional(string, "file")
+                keys           = list(string)
+                cache_capacity = optional(number)
+            })
+            default = null
+        }
+        tls = {
+            description = "Configures TLS certificates and client authentication for DoT, DoH, DoQ, and gRPC on the primary server block."
+            type = object({
+                cert        = string
+                key         = string
+                ca          = optional(string, "")
+                client_auth = optional(string, "")
+            })
+            default = null
+        }
+        minimal = {
+            description = "Enables minimal DNS response sizing on the primary server block."
+            type        = bool
+            default     = false
+        }
+        transfer = {
+            description = "Configures outgoing AXFR/IXFR zone transfers and NOTIFY targets on the primary server block."
+            type = list(object({
+                zones  = optional(list(string), [])
+                to     = list(string)
+                source = optional(string, "")
+            }))
+            default = []
+        }
+        dynupdate = {
+            description = "Configures RFC 2136 Dynamic DNS UPDATE access policies on the primary server block."
+            type = list(object({
+                zones      = optional(list(string), [])
+                allow_net  = optional(list(string), [])
+                allow_tsig = optional(list(string), [])
+                allow_name = optional(list(object({
+                    pattern = string
+                    types   = optional(list(string), [])
+                })), [])
+                allow_subdomain = optional(list(object({
+                    parent = string
+                    types  = optional(list(string), [])
+                })), [])
+                allow_self = optional(list(object({
+                    subtree = string
+                    types   = optional(list(string), [])
+                })), [])
+                block_net = optional(list(string), [])
+                block_name = optional(list(object({
+                    pattern = string
+                    types   = optional(list(string), [])
+                })), [])
+                block_subdomain = optional(list(object({
+                    parent = string
+                    types  = optional(list(string), [])
+                })), [])
+                dry_run = optional(bool, false)
+                audit   = optional(bool, false)
+            }))
+            default = []
+        }
+        hosts_plugin = {
+            description = "Configures advanced hosts plugin options (external hosts file, TTL, reload, reverse lookup, fallthrough) on the primary server block."
+            type = object({
+                file              = optional(string, "")
+                zones             = optional(list(string), [])
+                inline            = optional(map(list(string)), {})
+                ttl               = optional(number)
+                reload            = optional(string, "")
+                no_reverse        = optional(bool, false)
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+            })
+            default = null
+        }
+        route53 = {
+            description = "Configures serving zone data from AWS Route 53 on the primary server block."
+            type = object({
+                zones                 = list(string)
+                aws_access_key_id     = optional(string, "")
+                aws_secret_access_key = optional(string, "")
+                aws_endpoint          = optional(string, "")
+                credentials_profile   = optional(string, "")
+                credentials_file      = optional(string, "")
+                fallthrough           = optional(bool, false)
+                fallthrough_zones     = optional(list(string), [])
+                refresh               = optional(string, "")
+            })
+            default = null
+        }
+        azure = {
+            description = "Configures serving zone data from Microsoft Azure DNS on the primary server block."
+            type = object({
+                zones             = list(string)
+                tenant            = string
+                client            = string
+                secret            = string
+                subscription      = string
+                environment       = optional(string, "")
+                access            = optional(string, "")
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+                refresh           = optional(string, "")
+            })
+            default = null
+        }
+        clouddns = {
+            description = "Configures serving zone data from Google Cloud DNS on the primary server block."
+            type = object({
+                zones             = list(string)
+                credentials       = optional(string, "")
+                endpoint          = optional(string, "")
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+                refresh           = optional(string, "")
+            })
+            default = null
+        }
+        k8s_external = {
+            description = "Configures external IP and headless service resolution for Kubernetes on the primary server block."
+            type = object({
+                zones             = optional(list(string), [])
+                apex              = optional(string, "")
+                ttl               = optional(number)
+                headless          = optional(bool, false)
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+            })
+            default = null
+        }
+        kubernetes = {
+            description = "Configures Kubernetes DNS-Based Service Discovery on the primary server block."
+            type = object({
+                zones                  = optional(list(string), [])
+                endpoint               = optional(string, "")
+                tls_cert               = optional(string, "")
+                tls_key                = optional(string, "")
+                tls_cacert             = optional(string, "")
+                kubeconfig             = optional(string, "")
+                kubeconfig_context     = optional(string, "")
+                apiserver_qps          = optional(number)
+                apiserver_burst        = optional(number)
+                apiserver_max_inflight = optional(number)
+                namespaces             = optional(list(string), [])
+                namespace_labels       = optional(string, "")
+                labels                 = optional(string, "")
+                pods                   = optional(string, "")
+                endpoint_pod_names     = optional(bool, false)
+                ttl                    = optional(number)
+                noendpoints            = optional(bool, false)
+                fallthrough            = optional(bool, false)
+                fallthrough_zones      = optional(list(string), [])
+                ignore_empty_service   = optional(bool, false)
+                multicluster_zones     = optional(list(string), [])
+                zonal                  = optional(bool, false)
+                startup_timeout        = optional(string, "")
+            })
+            default = null
+        }
+        file = {
+            description = "Configures authoritative RFC 1035 zone files on the primary server block."
+            type = list(object({
+                dbfile            = string
+                zones             = optional(list(string), [])
+                reload            = optional(string, "")
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+            }))
+            default = []
+        }
+        auto = {
+            description = "Configures automatic loading of RFC 1035 zone files from directories on the primary server block."
+            type = list(object({
+                zones           = optional(list(string), [])
+                directory       = string
+                regexp          = optional(string, "")
+                origin_template = optional(string, "")
+                reload          = optional(string, "")
+            }))
+            default = []
+        }
+        secondary = {
+            description = "Configures secondary AXFR zone transfers and RFC 9432 catalog zones on the primary server block."
+            type = list(object({
+                zones                = optional(list(string), [])
+                transfer_from        = optional(list(string), [])
+                catalog              = optional(bool, false)
+                catalog_member_zones = optional(list(string), [])
+                fallthrough          = optional(bool, false)
+                fallthrough_zones    = optional(list(string), [])
+            }))
+            default = []
+        }
+        etcd = {
+            description = "Configures SkyDNS service discovery backed by etcd3 on the primary server block."
+            type = object({
+                zones             = optional(list(string), [])
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+                path              = optional(string, "")
+                endpoints         = optional(list(string), [])
+                username          = optional(string, "")
+                password          = optional(string, "")
+                tls_cert          = optional(string, "")
+                tls_key           = optional(string, "")
+                tls_cacert        = optional(string, "")
+                no_apex_fallback  = optional(bool, false)
+                min_lease_ttl     = optional(string, "")
+                max_lease_ttl     = optional(string, "")
+            })
+            default = null
+        }
+        loop = {
+            description = "Enables forwarding loop detection on the primary server block."
+            type        = bool
+            default     = false
+        }
+        grpc = {
+            description = "Configures proxying DNS messages to upstream resolvers over gRPC on the primary server block."
+            type = object({
+                from              = optional(string, ".")
+                to                = list(string)
+                except            = optional(list(string), [])
+                tls_cert          = optional(string, "")
+                tls_key           = optional(string, "")
+                tls_ca            = optional(string, "")
+                tls_servername    = optional(string, "")
+                policy            = optional(string, "")
+                fallthrough       = optional(bool, false)
+                fallthrough_zones = optional(list(string), [])
+            })
+            default = null
+        }
+        erratic = {
+            description = "Configures synthetic delayed, dropped, or truncated responses for client testing on the primary server block."
+            type = object({
+                enabled        = optional(bool, true)
+                drop           = optional(number)
+                truncate       = optional(number)
+                delay_amount   = optional(number)
+                delay_duration = optional(string, "")
+            })
+            default = null
+        }
+        whoami = {
+            description = "Enables the whoami plugin on the primary server block."
+            type        = bool
+            default     = false
+        }
+        on = {
+            description = "Configures startup and shutdown shell command hooks on the primary server block."
+            type = list(object({
+                event   = string
+                command = string
+            }))
+            default = []
+        }
+        sign = {
+            description = "Configures offline DNSSEC zone file signing on the primary server block."
+            type = list(object({
+                dbfile     = string
+                zones      = optional(list(string), [])
+                key_source = optional(string, "file")
+                keys       = list(string)
+                directory  = optional(string, "")
+            }))
+            default = []
+        }
+        view = {
+            description = "Configures expression-based view routing on the primary server block."
+            type = object({
+                name  = string
+                exprs = list(string)
+            })
+            default = null
+        }
+        nomad = {
+            description = "Configures HashiCorp Nomad service catalogue discovery on the primary server block."
+            type = object({
+                zones     = optional(list(string), [])
+                addresses = optional(list(string), [])
+                filter    = optional(string, "")
+                token     = optional(string, "")
+                ttl       = optional(number)
+            })
+            default = null
+        }
+        servers = {
+            description = "Additional Corefile server blocks keyed by name, each supporting the full CoreDNS v1.15.0 plugin set."
+            type = map(object({
+                zones       = optional(list(string), ["."])
+                port        = optional(number)
+                transport   = optional(string, "")
+                imports     = optional(list(string), [])
+                root        = optional(string, "")
+                metadata = optional(object({
+                    enabled = optional(bool, true)
+                    zones   = optional(list(string), [])
+                }))
+                geoip = optional(object({
+                    db_file     = string
+                    edns_subnet = optional(bool, false)
+                }))
+                cancel = optional(object({
+                    enabled = optional(bool, true)
+                    timeout = optional(string, "")
+                }))
+                proxyproto = optional(object({
+                    allow                             = optional(list(string), [])
+                    default                           = optional(string, "")
+                    udp_session_tracking_ttl          = optional(string, "")
+                    udp_session_tracking_max_sessions = optional(number)
+                    tlv_metadata                      = optional(bool, false)
+                }))
+                quic = optional(object({
+                    max_streams      = optional(number)
+                    worker_pool_size = optional(number)
+                }))
+                grpc_server = optional(object({
+                    max_streams     = optional(number)
+                    max_connections = optional(number)
+                }))
+                https = optional(object({
+                    max_connections = optional(number)
+                    path            = optional(string, "")
+                }))
+                https3 = optional(object({
+                    max_streams      = optional(number)
+                    worker_pool_size = optional(number)
+                    path             = optional(string, "")
+                }))
+                timeouts = optional(object({
+                    read  = optional(string, "")
+                    write = optional(string, "")
+                    idle  = optional(string, "")
+                }))
+                multisocket = optional(object({
+                    enabled     = optional(bool, true)
+                    num_sockets = optional(number)
+                }))
+                reload = optional(object({
+                    enabled  = optional(bool, true)
+                    interval = optional(string, "")
+                    jitter   = optional(string, "")
+                }))
+                nsid = optional(object({
+                    enabled = optional(bool, true)
+                    data    = optional(string, "")
+                }))
+                bufsize = optional(number)
+                bind = optional(object({
+                    addresses = optional(list(string), [])
+                    except    = optional(list(string), [])
+                }))
+                debug = optional(bool, false)
+                trace = optional(object({
+                    endpoint_type             = optional(string, "")
+                    endpoint                  = optional(string, "")
+                    every                     = optional(number)
+                    service                   = optional(string, "")
+                    client_server             = optional(bool, false)
+                    datadog_analytics_rate    = optional(number)
+                    zipkin_max_backlog_size   = optional(number)
+                    zipkin_max_batch_size     = optional(number)
+                    zipkin_max_batch_interval = optional(string, "")
+                }))
+                ready = optional(object({
+                    enabled = optional(bool, true)
+                    address = optional(string, "")
+                }))
+                health = optional(object({
+                    enabled  = optional(bool, true)
+                    address  = optional(string, "")
+                    lameduck = optional(string, "")
+                }))
+                pprof = optional(object({
+                    enabled    = optional(bool, true)
+                    address    = optional(string, "")
+                    block_rate = optional(number)
+                }))
+                shed = optional(bool, false)
+                prometheus = optional(object({
+                    enabled = optional(bool, true)
+                    address = optional(string, "")
+                }))
+                errors = optional(object({
+                    enabled = optional(bool, true)
+                    consolidations = optional(list(object({
+                        interval   = string
+                        pattern    = string
+                        show_first = optional(bool, false)
+                    })), [])
+                    stacktrace = optional(bool, false)
+                }))
+                log = optional(object({
+                    enabled = optional(bool, true)
+                    name    = optional(string, "")
+                    format  = optional(string, "")
+                    classes = optional(list(string), [])
+                }))
+                dnstap = optional(list(object({
+                    socket      = string
+                    listen      = optional(bool, false)
+                    full        = optional(bool, false)
+                    writebuffer = optional(number)
+                    queue       = optional(number)
+                    identity    = optional(string, "")
+                    version     = optional(string, "")
+                    extra       = optional(string, "")
+                    tls_cert    = optional(string, "")
+                    tls_key     = optional(string, "")
+                    tls_ca      = optional(string, "")
+                    skipverify  = optional(bool, false)
+                })), [])
+                local = optional(object({
+                    enabled          = optional(bool, true)
+                    localhost_prefix = optional(string, "")
+                }))
+                dns64 = optional(object({
+                    zones         = optional(list(string), [])
+                    prefix        = optional(string, "")
+                    translate_all = optional(bool, false)
+                    allow_ipv4    = optional(bool, false)
+                }))
+                siit = optional(object({
+                    prefix        = string
+                    zones         = optional(list(string), [])
+                    translate_all = optional(bool, false)
+                }))
+                any = optional(bool, false)
+                chaos = optional(object({
+                    enabled = optional(bool, true)
+                    version = optional(string, "")
+                    authors = optional(list(string), [])
+                }))
+                loadbalance = optional(object({
+                    policy     = optional(string, "round_robin")
+                    weightfile = optional(string, "")
+                    reload     = optional(string, "")
+                    prefer     = optional(list(string), [])
+                }))
+                tsig = optional(object({
+                    zones          = optional(list(string), [])
+                    secrets        = optional(map(string), {})
+                    secrets_file   = optional(string, "")
+                    require        = optional(list(string), [])
+                    require_opcode = optional(list(string), [])
+                }))
+                rewrites = optional(list(string), [])
+                autopath = optional(object({
+                    zones       = optional(list(string), [])
+                    resolv_conf = string
+                }))
+                acl = optional(list(object({
+                    zones = optional(list(string), [])
+                    rules = list(object({
+                        action = string
+                        type   = optional(string, "")
+                        net    = optional(list(string), [])
+                    }))
+                })), [])
+                cache = optional(object({
+                    ttl                   = optional(number)
+                    zones                 = optional(list(string), [])
+                    success_capacity      = optional(number)
+                    success_ttl           = optional(number)
+                    success_min_ttl       = optional(number)
+                    denial_capacity       = optional(number)
+                    denial_ttl            = optional(number)
+                    denial_min_ttl        = optional(number)
+                    prefetch_amount       = optional(number)
+                    prefetch_duration     = optional(string, "")
+                    prefetch_percentage   = optional(number)
+                    serve_stale_duration  = optional(string, "")
+                    serve_stale_verify    = optional(string, "")
+                    servfail              = optional(string, "")
+                    disable_success_zones = optional(list(string), [])
+                    disable_denial_zones  = optional(list(string), [])
+                    keepttl               = optional(bool, false)
+                }))
+                header = optional(list(object({
+                    selector = optional(string, "")
+                    actions  = list(string)
+                })), [])
+                dnssec = optional(object({
+                    zones          = optional(list(string), [])
+                    key_source     = optional(string, "file")
+                    keys           = list(string)
+                    cache_capacity = optional(number)
+                }))
+                tls = optional(object({
+                    cert        = string
+                    key         = string
+                    ca          = optional(string, "")
+                    client_auth = optional(string, "")
+                }))
+                minimal = optional(bool, false)
+                templates = optional(list(object({
+                    class             = optional(string, "IN")
+                    type              = optional(string, "ANY")
+                    zones             = optional(list(string), [])
+                    regex             = optional(string, ".*")
+                    answer            = optional(list(string), [])
+                    additional        = optional(list(string), [])
+                    authority         = optional(list(string), [])
+                    rcode             = optional(string, "")
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                    upstream          = optional(string, "")
+                })), [])
+                transfer = optional(list(object({
+                    zones  = optional(list(string), [])
+                    to     = list(string)
+                    source = optional(string, "")
+                })), [])
+                dynupdate = optional(list(object({
+                    zones      = optional(list(string), [])
+                    allow_net  = optional(list(string), [])
+                    allow_tsig = optional(list(string), [])
+                    allow_name = optional(list(object({
+                        pattern = string
+                        types   = optional(list(string), [])
+                    })), [])
+                    allow_subdomain = optional(list(object({
+                        parent = string
+                        types  = optional(list(string), [])
+                    })), [])
+                    allow_self = optional(list(object({
+                        subtree = string
+                        types   = optional(list(string), [])
+                    })), [])
+                    block_net = optional(list(string), [])
+                    block_name = optional(list(object({
+                        pattern = string
+                        types   = optional(list(string), [])
+                    })), [])
+                    block_subdomain = optional(list(object({
+                        parent = string
+                        types  = optional(list(string), [])
+                    })), [])
+                    dry_run = optional(bool, false)
+                    audit   = optional(bool, false)
+                })), [])
+                hosts = optional(object({
+                    file              = optional(string, "")
+                    zones             = optional(list(string), [])
+                    inline            = optional(map(list(string)), {})
+                    ttl               = optional(number)
+                    reload            = optional(string, "")
+                    no_reverse        = optional(bool, false)
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                }))
+                route53 = optional(object({
+                    zones                 = list(string)
+                    aws_access_key_id     = optional(string, "")
+                    aws_secret_access_key = optional(string, "")
+                    aws_endpoint          = optional(string, "")
+                    credentials_profile   = optional(string, "")
+                    credentials_file      = optional(string, "")
+                    fallthrough           = optional(bool, false)
+                    fallthrough_zones     = optional(list(string), [])
+                    refresh               = optional(string, "")
+                }))
+                azure = optional(object({
+                    zones             = list(string)
+                    tenant            = string
+                    client            = string
+                    secret            = string
+                    subscription      = string
+                    environment       = optional(string, "")
+                    access            = optional(string, "")
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                    refresh           = optional(string, "")
+                }))
+                clouddns = optional(object({
+                    zones             = list(string)
+                    credentials       = optional(string, "")
+                    endpoint          = optional(string, "")
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                    refresh           = optional(string, "")
+                }))
+                k8s_external = optional(object({
+                    zones             = optional(list(string), [])
+                    apex              = optional(string, "")
+                    ttl               = optional(number)
+                    headless          = optional(bool, false)
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                }))
+                kubernetes = optional(object({
+                    zones                  = optional(list(string), [])
+                    endpoint               = optional(string, "")
+                    tls_cert               = optional(string, "")
+                    tls_key                = optional(string, "")
+                    tls_cacert             = optional(string, "")
+                    kubeconfig             = optional(string, "")
+                    kubeconfig_context     = optional(string, "")
+                    apiserver_qps          = optional(number)
+                    apiserver_burst        = optional(number)
+                    apiserver_max_inflight = optional(number)
+                    namespaces             = optional(list(string), [])
+                    namespace_labels       = optional(string, "")
+                    labels                 = optional(string, "")
+                    pods                   = optional(string, "")
+                    endpoint_pod_names     = optional(bool, false)
+                    ttl                    = optional(number)
+                    noendpoints            = optional(bool, false)
+                    fallthrough            = optional(bool, false)
+                    fallthrough_zones      = optional(list(string), [])
+                    ignore_empty_service   = optional(bool, false)
+                    multicluster_zones     = optional(list(string), [])
+                    zonal                  = optional(bool, false)
+                    startup_timeout        = optional(string, "")
+                }))
+                file = optional(list(object({
+                    dbfile            = string
+                    zones             = optional(list(string), [])
+                    reload            = optional(string, "")
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                })), [])
+                auto = optional(list(object({
+                    zones           = optional(list(string), [])
+                    directory       = string
+                    regexp          = optional(string, "")
+                    origin_template = optional(string, "")
+                    reload          = optional(string, "")
+                })), [])
+                secondary = optional(list(object({
+                    zones                = optional(list(string), [])
+                    transfer_from        = optional(list(string), [])
+                    catalog              = optional(bool, false)
+                    catalog_member_zones = optional(list(string), [])
+                    fallthrough          = optional(bool, false)
+                    fallthrough_zones    = optional(list(string), [])
+                })), [])
+                etcd = optional(object({
+                    zones             = optional(list(string), [])
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                    path              = optional(string, "")
+                    endpoints         = optional(list(string), [])
+                    username          = optional(string, "")
+                    password          = optional(string, "")
+                    tls_cert          = optional(string, "")
+                    tls_key           = optional(string, "")
+                    tls_cacert        = optional(string, "")
+                    no_apex_fallback  = optional(bool, false)
+                    min_lease_ttl     = optional(string, "")
+                    max_lease_ttl     = optional(string, "")
+                }))
+                loop = optional(bool, false)
+                forwards = optional(list(object({
+                    from                             = optional(string, ".")
+                    to                               = list(string)
+                    except                           = optional(list(string), [])
+                    force_tcp                        = optional(bool, false)
+                    prefer_udp                       = optional(bool, false)
+                    expire                           = optional(string, "")
+                    max_fails                        = optional(number)
+                    tls_cert                         = optional(string, "")
+                    tls_key                          = optional(string, "")
+                    tls_ca                           = optional(string, "")
+                    tls_servername                   = optional(string, "")
+                    policy                           = optional(string, "")
+                    health_check                     = optional(string, "")
+                    health_check_domain              = optional(string, "")
+                    dnstap                           = optional(bool, false)
+                    max_concurrent                   = optional(number)
+                    next                             = optional(list(string), [])
+                    failfast_all_unhealthy_upstreams = optional(bool, false)
+                    failovers                        = optional(list(string), [])
+                })), [])
+                grpc = optional(object({
+                    from              = optional(string, ".")
+                    to                = list(string)
+                    except            = optional(list(string), [])
+                    tls_cert          = optional(string, "")
+                    tls_key           = optional(string, "")
+                    tls_ca            = optional(string, "")
+                    tls_servername    = optional(string, "")
+                    policy            = optional(string, "")
+                    fallthrough       = optional(bool, false)
+                    fallthrough_zones = optional(list(string), [])
+                }))
+                erratic = optional(object({
+                    enabled        = optional(bool, true)
+                    drop           = optional(number)
+                    truncate       = optional(number)
+                    delay_amount   = optional(number)
+                    delay_duration = optional(string, "")
+                }))
+                whoami = optional(bool, false)
+                on = optional(list(object({
+                    event   = string
+                    command = string
+                })), [])
+                sign = optional(list(object({
+                    dbfile     = string
+                    zones      = optional(list(string), [])
+                    key_source = optional(string, "file")
+                    keys       = list(string)
+                    directory  = optional(string, "")
+                })), [])
+                view = optional(object({
+                    name  = string
+                    exprs = list(string)
+                }))
+                nomad = optional(object({
+                    zones     = optional(list(string), [])
+                    addresses = optional(list(string), [])
+                    filter    = optional(string, "")
+                    token     = optional(string, "")
+                    ttl       = optional(number)
+                }))
+            }))
+            default = {}
+        }
+    }
+
+    outputs = {
+        zone = {
+            description = "Primary DNS zone served by this CoreDNS instance."
+            type        = string
+            value       = inputs.zone
+        }
+        port = {
+            description = "UDP/TCP port CoreDNS listens on."
+            type        = number
+            value       = component.coredns.service.go.coredns.vars.port
+        }
+        dns = {
+            description = "Loopback host:port address of the CoreDNS listener."
+            type        = string
+            value       = "127.0.0.1:${component.coredns.service.go.coredns.vars.port}"
+        }
+        ready_port = {
+            description = "HTTP port of the ready endpoint."
+            type        = number
+            value       = inputs.ready_port
+        }
+        ready_url = {
+            description = "HTTP URL of the ready endpoint (/ready)."
+            type        = string
+            value       = "http://127.0.0.1:${inputs.ready_port}/ready"
+        }
+        health_port = {
+            description = "HTTP port of the health endpoint."
+            type        = number
+            value       = inputs.health_port
+        }
+        health_url = {
+            description = "HTTP URL of the health endpoint (/health)."
+            type        = string
+            value       = "http://127.0.0.1:${inputs.health_port}/health"
+        }
+        metrics_port = {
+            description = "HTTP port of the Prometheus metrics endpoint."
+            type        = number
+            value       = inputs.metrics_port
+        }
+        metrics_url = {
+            description = "HTTP URL of the Prometheus metrics endpoint (/metrics)."
+            type        = string
+            value       = "http://127.0.0.1:${inputs.metrics_port}/metrics"
+        }
+        pprof_port = {
+            description = "HTTP port of the pprof endpoint."
+            type        = number
+            value       = inputs.pprof_port
+        }
+        corefile = {
+            description = "Filesystem path to the generated Corefile."
+            type        = string
+            value       = component.coredns.service.go.coredns.file.corefile.path
+        }
+        ready = {
+            description = "Readiness barrier reference for the CoreDNS service."
+            type        = string
+            value       = component.coredns.service.go.coredns.runtime.ready
+        }
+    }
+
+    component "coredns" {
+        toolchain {
+            go {
+                version = "1.26.0"
+            }
+        }
+
+        service "go" "coredns" {
+            git {
+                url = "github.com/coredns/coredns"
+                tag = "v1.15.0"
+            }
+
+            vars = {
+                zone = inputs.zone
+                dns  = inputs.dns_port != null ? inputs.dns_port : inputs.port
+                port = inputs.dns_port != null ? inputs.dns_port : inputs.port
+            }
+
+            sudo "resolver" {
+                enabled = features.resolver
+                check   = "grep -qxF 'port ${self.vars.port}' /etc/resolver/${inputs.zone} 2>/dev/null"
+                apply   = <<-EOT
+                    mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\nport ${self.vars.port}\n' > /etc/resolver/${inputs.zone}
+                EOT
+                verify  = "grep -qxF 'port ${self.vars.port}' /etc/resolver/${inputs.zone}"
+            }
+
+            file "corefile" {
+                path = "${fs::etc()}/Corefile"
+                body = <<-EOF
+%{for name, body in inputs.snippets}(${name}) {
+    ${body}
+}
+
+%{endfor}${inputs.transport != "" ? "${inputs.transport}://" : ""}${inputs.zone}%{for z in inputs.zones} ${inputs.transport != "" ? "${inputs.transport}://" : ""}${z}%{endfor}:${self.vars.port} {
+%{for imp in inputs.imports ~}
+    import ${imp}
+%{endfor ~}
+%{if inputs.root != "" ~}
+    root ${inputs.root}
+%{endif ~}
+%{if inputs.metadata != null ~}
+%{if inputs.metadata.enabled ~}
+    metadata%{for z in inputs.metadata.zones} ${z}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if inputs.geoip != null ~}
+    geoip ${inputs.geoip.db_file}%{if inputs.geoip.edns_subnet} {
+        edns-subnet
+    }%{endif}
+%{endif ~}
+%{if inputs.cancel != null ~}
+%{if inputs.cancel.enabled ~}
+    cancel${inputs.cancel.timeout != "" ? " ${inputs.cancel.timeout}" : ""}
+%{endif ~}
+%{endif ~}
+%{if inputs.proxyproto != null ~}
+    proxyproto {
+%{if [for x in inputs.proxyproto.allow : x] != [] ~}
+        allow%{for cidr in inputs.proxyproto.allow} ${cidr}%{endfor}
+%{endif ~}
+%{if inputs.proxyproto.default != "" ~}
+        default ${inputs.proxyproto.default}
+%{endif ~}
+%{if inputs.proxyproto.udp_session_tracking_ttl != "" ~}
+        udp_session_tracking ${inputs.proxyproto.udp_session_tracking_ttl}${inputs.proxyproto.udp_session_tracking_max_sessions != null ? " ${inputs.proxyproto.udp_session_tracking_max_sessions}" : ""}
+%{endif ~}
+%{if inputs.proxyproto.tlv_metadata ~}
+        tlv_metadata
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.quic != null ~}
+    quic {
+%{if inputs.quic.max_streams != null ~}
+        max_streams ${inputs.quic.max_streams}
+%{endif ~}
+%{if inputs.quic.worker_pool_size != null ~}
+        worker_pool_size ${inputs.quic.worker_pool_size}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.grpc_server != null ~}
+    grpc_server {
+%{if inputs.grpc_server.max_streams != null ~}
+        max_streams ${inputs.grpc_server.max_streams}
+%{endif ~}
+%{if inputs.grpc_server.max_connections != null ~}
+        max_connections ${inputs.grpc_server.max_connections}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.https != null ~}
+    https {
+%{if inputs.https.max_connections != null ~}
+        max_connections ${inputs.https.max_connections}
+%{endif ~}
+%{if inputs.https.path != "" ~}
+        path ${inputs.https.path}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.https3 != null ~}
+    https3 {
+%{if inputs.https3.max_streams != null ~}
+        max_streams ${inputs.https3.max_streams}
+%{endif ~}
+%{if inputs.https3.worker_pool_size != null ~}
+        worker_pool_size ${inputs.https3.worker_pool_size}
+%{endif ~}
+%{if inputs.https3.path != "" ~}
+        path ${inputs.https3.path}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.timeouts != null ~}
+    timeouts {
+%{if inputs.timeouts.read != "" ~}
+        read ${inputs.timeouts.read}
+%{endif ~}
+%{if inputs.timeouts.write != "" ~}
+        write ${inputs.timeouts.write}
+%{endif ~}
+%{if inputs.timeouts.idle != "" ~}
+        idle ${inputs.timeouts.idle}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.multisocket != null ~}
+%{if inputs.multisocket.enabled ~}
+    multisocket${inputs.multisocket.num_sockets != null ? " ${inputs.multisocket.num_sockets}" : ""}
+%{endif ~}
+%{endif ~}
+%{if features.reload || (inputs.reload != null && inputs.reload.enabled) ~}
+    reload${inputs.reload != null && inputs.reload.interval != "" ? " ${inputs.reload.interval}" : ""}${inputs.reload != null && inputs.reload.jitter != "" ? " ${inputs.reload.jitter}" : ""}
+%{endif ~}
+%{if inputs.nsid != null ~}
+%{if inputs.nsid.enabled ~}
+    nsid${inputs.nsid.data != "" ? " ${inputs.nsid.data}" : ""}
+%{endif ~}
+%{endif ~}
+%{if inputs.bufsize != null ~}
+    bufsize ${inputs.bufsize}
+%{endif ~}
+%{if inputs.bind != null ~}
+%{if [for x in inputs.bind.except : x] != [] ~}
+    bind {
+%{if [for x in inputs.bind.addresses : x] != [] ~}
+        addresses%{for a in inputs.bind.addresses} ${a}%{endfor}
+%{endif ~}
+        except%{for e in inputs.bind.except} ${e}%{endfor}
+    }
+%{else ~}
+    bind%{for a in inputs.bind.addresses} ${a}%{endfor}
+%{endif ~}
+%{else ~}
+    bind 127.0.0.1
+%{endif ~}
+%{if features.debug || inputs.debug ~}
+    debug
+%{endif ~}
+%{if inputs.trace != null ~}
+    trace${inputs.trace.endpoint_type != "" ? " ${inputs.trace.endpoint_type}" : ""}${inputs.trace.endpoint != "" ? " ${inputs.trace.endpoint}" : ""} {
+%{if inputs.trace.every != null ~}
+        every ${inputs.trace.every}
+%{endif ~}
+%{if inputs.trace.service != "" ~}
+        service ${inputs.trace.service}
+%{endif ~}
+%{if inputs.trace.client_server ~}
+        client_server
+%{endif ~}
+%{if inputs.trace.datadog_analytics_rate != null ~}
+        datadog_analytics_rate ${inputs.trace.datadog_analytics_rate}
+%{endif ~}
+%{if inputs.trace.zipkin_max_backlog_size != null ~}
+        zipkin_max_backlog_size ${inputs.trace.zipkin_max_backlog_size}
+%{endif ~}
+%{if inputs.trace.zipkin_max_batch_size != null ~}
+        zipkin_max_batch_size ${inputs.trace.zipkin_max_batch_size}
+%{endif ~}
+%{if inputs.trace.zipkin_max_batch_interval != "" ~}
+        zipkin_max_batch_interval ${inputs.trace.zipkin_max_batch_interval}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.ready == null || inputs.ready.enabled ~}
+    ready ${inputs.ready != null && inputs.ready.address != "" ? inputs.ready.address : "127.0.0.1:${inputs.ready_port}"}
+%{endif ~}
+%{if features.health || (inputs.health != null && inputs.health.enabled) ~}
+    health ${inputs.health != null && inputs.health.address != "" ? inputs.health.address : "127.0.0.1:${inputs.health_port}"}%{if inputs.health != null && inputs.health.lameduck != ""} {
+        lameduck ${inputs.health.lameduck}
+    }%{endif}
+%{endif ~}
+%{if features.pprof || (inputs.pprof != null && inputs.pprof.enabled) ~}
+    pprof ${inputs.pprof != null && inputs.pprof.address != "" ? inputs.pprof.address : "127.0.0.1:${inputs.pprof_port}"}%{if inputs.pprof != null && inputs.pprof.block_rate != null} {
+        block ${inputs.pprof.block_rate}
+    }%{endif}
+%{endif ~}
+%{if features.shed || inputs.shed ~}
+    shed
+%{endif ~}
+%{if features.metrics || (inputs.prometheus != null && inputs.prometheus.enabled) ~}
+    prometheus ${inputs.prometheus != null && inputs.prometheus.address != "" ? inputs.prometheus.address : "127.0.0.1:${inputs.metrics_port}"}
+%{endif ~}
+%{if inputs.errors != null ~}
+%{if inputs.errors.enabled ~}
+%{if inputs.errors.stacktrace || [for c in inputs.errors.consolidations : c] != [] ~}
+    errors {
+%{for c in inputs.errors.consolidations ~}
+        consolidate ${c.interval} "${c.pattern}"${c.show_first ? " show_first" : ""}
+%{endfor ~}
+%{if inputs.errors.stacktrace ~}
+        stacktrace
+%{endif ~}
+    }
+%{else ~}
+    errors
+%{endif ~}
+%{endif ~}
+%{endif ~}
+%{if features.log || (inputs.log != null && inputs.log.enabled) ~}
+%{if inputs.log != null && [for c in inputs.log.classes : c] != [] ~}
+    log${inputs.log.name != "" ? " ${inputs.log.name}" : ""}${inputs.log.format != "" ? " \"${inputs.log.format}\"" : ""} {
+%{for cls in inputs.log.classes ~}
+        class ${cls}
+%{endfor ~}
+    }
+%{else ~}
+    log${inputs.log != null && inputs.log.name != "" ? " ${inputs.log.name}" : ""}${inputs.log != null && inputs.log.format != "" ? " \"${inputs.log.format}\"" : ""}
+%{endif ~}
+%{endif ~}
+%{for tap in inputs.dnstap ~}
+    dnstap${tap.listen ? " listen" : ""} ${tap.socket}${tap.full ? " full" : ""}${tap.writebuffer != null ? " ${tap.writebuffer}" : ""}${tap.queue != null ? " ${tap.queue}" : ""} {
+%{if tap.identity != "" ~}
+        identity ${tap.identity}
+%{endif ~}
+%{if tap.version != "" ~}
+        version ${tap.version}
+%{endif ~}
+%{if tap.extra != "" ~}
+        extra "${tap.extra}"
+%{endif ~}
+%{if tap.tls_cert != "" ~}
+        tls ${tap.tls_cert} ${tap.tls_key}${tap.tls_ca != "" ? " ${tap.tls_ca}" : ""}
+%{endif ~}
+%{if tap.skipverify ~}
+        skipverify
+%{endif ~}
+    }
+%{endfor ~}
+%{if features.local || (inputs.local != null && inputs.local.enabled) ~}
+%{if inputs.local != null && inputs.local.localhost_prefix != "" ~}
+    local {
+        localhost_prefix ${inputs.local.localhost_prefix}
+    }
+%{else ~}
+    local
+%{endif ~}
+%{endif ~}
+%{if inputs.dns64 != null ~}
+    dns64%{for z in inputs.dns64.zones} ${z}%{endfor} {
+%{if inputs.dns64.prefix != "" ~}
+        prefix ${inputs.dns64.prefix}
+%{endif ~}
+%{if inputs.dns64.translate_all ~}
+        translate_all
+%{endif ~}
+%{if inputs.dns64.allow_ipv4 ~}
+        allow_ipv4
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.siit != null ~}
+    siit ${inputs.siit.prefix}%{for z in inputs.siit.zones} ${z}%{endfor}%{if inputs.siit.translate_all} {
+        translate_all
+    }%{endif}
+%{endif ~}
+%{if features.any || inputs.any ~}
+    any
+%{endif ~}
+%{if inputs.chaos != null ~}
+%{if inputs.chaos.enabled ~}
+    chaos${inputs.chaos.version != "" ? " ${inputs.chaos.version}" : ""}%{for a in inputs.chaos.authors} ${a}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if inputs.loadbalance != null ~}
+    loadbalance ${inputs.loadbalance.policy}${inputs.loadbalance.weightfile != "" ? " ${inputs.loadbalance.weightfile}" : ""} {
+%{if inputs.loadbalance.reload != "" ~}
+        reload ${inputs.loadbalance.reload}
+%{endif ~}
+%{if [for p in inputs.loadbalance.prefer : p] != [] ~}
+        prefer%{for p in inputs.loadbalance.prefer} ${p}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.tsig != null ~}
+    tsig%{for z in inputs.tsig.zones} ${z}%{endfor} {
+%{for name, secret in inputs.tsig.secrets ~}
+        secret ${name} ${secret}
+%{endfor ~}
+%{if inputs.tsig.secrets_file != "" ~}
+        secrets ${inputs.tsig.secrets_file}
+%{endif ~}
+%{if [for r in inputs.tsig.require : r] != [] ~}
+        require%{for r in inputs.tsig.require} ${r}%{endfor}
+%{endif ~}
+%{if [for op in inputs.tsig.require_opcode : op] != [] ~}
+        require_opcode%{for op in inputs.tsig.require_opcode} ${op}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{for _, rule in inputs.rewrites ~}
+    rewrite ${rule}
+%{endfor ~}
+%{if inputs.autopath != null ~}
+    autopath%{for z in inputs.autopath.zones} ${z}%{endfor} ${inputs.autopath.resolv_conf}
+%{endif ~}
+%{for acl_block in inputs.acl ~}
+    acl%{for z in acl_block.zones} ${z}%{endfor} {
+%{for r in acl_block.rules ~}
+        ${r.action}${r.type != "" ? " type ${r.type}" : ""}%{if [for n in r.net : n] != []} net%{for n in r.net} ${n}%{endfor}%{endif}
+%{endfor ~}
+    }
+%{endfor ~}
+%{if inputs.cache != null ~}
+    cache${inputs.cache.ttl != null ? " ${inputs.cache.ttl}" : ""}%{for z in inputs.cache.zones} ${z}%{endfor} {
+%{if inputs.cache.success_capacity != null ~}
+        success ${inputs.cache.success_capacity}${inputs.cache.success_ttl != null ? " ${inputs.cache.success_ttl}" : ""}${inputs.cache.success_min_ttl != null ? " ${inputs.cache.success_min_ttl}" : ""}
+%{endif ~}
+%{if inputs.cache.denial_capacity != null ~}
+        denial ${inputs.cache.denial_capacity}${inputs.cache.denial_ttl != null ? " ${inputs.cache.denial_ttl}" : ""}${inputs.cache.denial_min_ttl != null ? " ${inputs.cache.denial_min_ttl}" : ""}
+%{endif ~}
+%{if inputs.cache.prefetch_amount != null ~}
+        prefetch ${inputs.cache.prefetch_amount}${inputs.cache.prefetch_duration != "" ? " ${inputs.cache.prefetch_duration}" : ""}${inputs.cache.prefetch_percentage != null ? " ${inputs.cache.prefetch_percentage}%" : ""}
+%{endif ~}
+%{if inputs.cache.serve_stale_duration != "" ~}
+        serve_stale ${inputs.cache.serve_stale_duration}${inputs.cache.serve_stale_verify != "" ? " ${inputs.cache.serve_stale_verify}" : ""}
+%{endif ~}
+%{if inputs.cache.servfail != "" ~}
+        servfail ${inputs.cache.servfail}
+%{endif ~}
+%{for z in inputs.cache.disable_success_zones ~}
+        disable success ${z}
+%{endfor ~}
+%{for z in inputs.cache.disable_denial_zones ~}
+        disable denial ${z}
+%{endfor ~}
+%{if inputs.cache.keepttl ~}
+        keepttl
+%{endif ~}
+    }
+%{endif ~}
+%{for h in inputs.header ~}
+    header${h.selector != "" ? " ${h.selector}" : ""} {
+%{for act in h.actions ~}
+        ${act}
+%{endfor ~}
+    }
+%{endfor ~}
+%{if inputs.dnssec != null ~}
+    dnssec%{for z in inputs.dnssec.zones} ${z}%{endfor} {
+        key ${inputs.dnssec.key_source}%{for k in inputs.dnssec.keys} ${k}%{endfor}
+%{if inputs.dnssec.cache_capacity != null ~}
+        cache_capacity ${inputs.dnssec.cache_capacity}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.tls != null ~}
+    tls ${inputs.tls.cert} ${inputs.tls.key}${inputs.tls.ca != "" ? " ${inputs.tls.ca}" : ""} {
+%{if inputs.tls.client_auth != "" ~}
+        client_auth ${inputs.tls.client_auth}
+%{endif ~}
+    }
+%{endif ~}
+%{if features.minimal || inputs.minimal ~}
+    minimal
+%{endif ~}
+%{for _, rec in inputs.records ~}
+    template ${rec.class} ${rec.type} {
+        match "^${rec.name}\\.?$"
+        answer "{{ .Name }} ${rec.ttl} ${rec.class} ${rec.type} ${rec.data}"
+        fallthrough
+    }
+%{endfor ~}
+%{for _, tpl in inputs.templates ~}
+    template ${tpl.class} ${tpl.type}%{for z in tpl.zones} ${z}%{endfor} {
+        match "${tpl.regex}"
+%{for ans in tpl.answer ~}
+        answer "${ans}"
+%{endfor ~}
+%{for add in tpl.additional ~}
+        additional "${add}"
+%{endfor ~}
+%{for auth in tpl.authority ~}
+        authority "${auth}"
+%{endfor ~}
+%{if tpl.rcode != "" ~}
+        rcode ${tpl.rcode}
+%{endif ~}
+%{if tpl.upstream != "" ~}
+        upstream ${tpl.upstream}
+%{endif ~}
+%{if tpl.fallthrough ~}
+        fallthrough%{for z in tpl.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{if features.local || (inputs.loopback_fallback && [for _, v in inputs.templates : v] == [] && [for _, v in inputs.records : v] == [] && [for _, v in inputs.hosts : v] == [] && [for _, v in inputs.forwards : v] == [] && inputs.hosts_plugin == null && [for f in inputs.file : f] == [] && [for a in inputs.auto : a] == [] && [for s in inputs.secondary : s] == [] && inputs.route53 == null && inputs.azure == null && inputs.clouddns == null && inputs.kubernetes == null && inputs.etcd == null && inputs.nomad == null && inputs.grpc == null) ~}
+    template IN A {
+        answer "{{ .Name }} ${inputs.loopback_ttl} IN A ${inputs.loopback_ipv4}"
+    }
+    template IN AAAA {
+        answer "{{ .Name }} ${inputs.loopback_ttl} IN AAAA ${inputs.loopback_ipv6}"
+    }
+%{endif ~}
+%{for tr in inputs.transfer ~}
+    transfer%{for z in tr.zones} ${z}%{endfor} {
+        to%{for t in tr.to} ${t}%{endfor}
+%{if tr.source != "" ~}
+        source ${tr.source}
+%{endif ~}
+    }
+%{endfor ~}
+%{for dyn in inputs.dynupdate ~}
+    dynupdate%{for z in dyn.zones} ${z}%{endfor} {
+%{if [for n in dyn.allow_net : n] != [] ~}
+        allow net%{for n in dyn.allow_net} ${n}%{endfor}
+%{endif ~}
+%{if [for k in dyn.allow_tsig : k] != [] ~}
+        allow tsig%{for k in dyn.allow_tsig} ${k}%{endfor}
+%{endif ~}
+%{for nm in dyn.allow_name ~}
+        allow name ${nm.pattern}%{for t in nm.types} ${t}%{endfor}
+%{endfor ~}
+%{for sd in dyn.allow_subdomain ~}
+        allow subdomain ${sd.parent}%{for t in sd.types} ${t}%{endfor}
+%{endfor ~}
+%{for sf in dyn.allow_self ~}
+        allow self ${sf.subtree}%{for t in sf.types} ${t}%{endfor}
+%{endfor ~}
+%{if [for n in dyn.block_net : n] != [] ~}
+        block net%{for n in dyn.block_net} ${n}%{endfor}
+%{endif ~}
+%{for nm in dyn.block_name ~}
+        block name ${nm.pattern}%{for t in nm.types} ${t}%{endfor}
+%{endfor ~}
+%{for sd in dyn.block_subdomain ~}
+        block subdomain ${sd.parent}%{for t in sd.types} ${t}%{endfor}
+%{endfor ~}
+%{if dyn.dry_run ~}
+        dry_run
+%{endif ~}
+%{if dyn.audit ~}
+        audit
+%{endif ~}
+    }
+%{endfor ~}
+%{if [for _, h in inputs.hosts : h] != [] || inputs.hosts_plugin != null ~}
+    hosts${inputs.hosts_plugin != null && inputs.hosts_plugin.file != "" ? " ${inputs.hosts_plugin.file}" : ""}%{if inputs.hosts_plugin != null}%{for z in inputs.hosts_plugin.zones} ${z}%{endfor}%{endif} {
+%{for hostname, entry in inputs.hosts ~}
+        ${entry.ip} ${hostname}%{for alias in entry.hostnames} ${alias}%{endfor}
+%{endfor ~}
+%{if inputs.hosts_plugin != null ~}
+%{for ip, names in inputs.hosts_plugin.inline ~}
+        ${ip}%{for n in names} ${n}%{endfor}
+%{endfor ~}
+%{if inputs.hosts_plugin.ttl != null ~}
+        ttl ${inputs.hosts_plugin.ttl}
+%{endif ~}
+%{if inputs.hosts_plugin.reload != "" ~}
+        reload ${inputs.hosts_plugin.reload}
+%{endif ~}
+%{if inputs.hosts_plugin.no_reverse ~}
+        no_reverse
+%{endif ~}
+%{if inputs.hosts_plugin.fallthrough ~}
+        fallthrough%{for z in inputs.hosts_plugin.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{else ~}
+        fallthrough
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.route53 != null ~}
+    route53%{for z in inputs.route53.zones} ${z}%{endfor} {
+%{if inputs.route53.aws_access_key_id != "" ~}
+        aws_access_key ${inputs.route53.aws_access_key_id} ${inputs.route53.aws_secret_access_key}
+%{endif ~}
+%{if inputs.route53.aws_endpoint != "" ~}
+        aws_endpoint ${inputs.route53.aws_endpoint}
+%{endif ~}
+%{if inputs.route53.credentials_profile != "" ~}
+        credentials ${inputs.route53.credentials_profile}${inputs.route53.credentials_file != "" ? " ${inputs.route53.credentials_file}" : ""}
+%{endif ~}
+%{if inputs.route53.fallthrough ~}
+        fallthrough%{for z in inputs.route53.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if inputs.route53.refresh != "" ~}
+        refresh ${inputs.route53.refresh}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.azure != null ~}
+    azure%{for z in inputs.azure.zones} ${z}%{endfor} {
+        tenant ${inputs.azure.tenant}
+        client ${inputs.azure.client}
+        secret ${inputs.azure.secret}
+        subscription ${inputs.azure.subscription}
+%{if inputs.azure.environment != "" ~}
+        environment ${inputs.azure.environment}
+%{endif ~}
+%{if inputs.azure.access != "" ~}
+        access ${inputs.azure.access}
+%{endif ~}
+%{if inputs.azure.fallthrough ~}
+        fallthrough%{for z in inputs.azure.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if inputs.azure.refresh != "" ~}
+        refresh ${inputs.azure.refresh}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.clouddns != null ~}
+    clouddns%{for z in inputs.clouddns.zones} ${z}%{endfor} {
+%{if inputs.clouddns.credentials != "" ~}
+        credentials ${inputs.clouddns.credentials}
+%{endif ~}
+%{if inputs.clouddns.endpoint != "" ~}
+        endpoint ${inputs.clouddns.endpoint}
+%{endif ~}
+%{if inputs.clouddns.fallthrough ~}
+        fallthrough%{for z in inputs.clouddns.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if inputs.clouddns.refresh != "" ~}
+        refresh ${inputs.clouddns.refresh}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.k8s_external != null ~}
+    k8s_external%{for z in inputs.k8s_external.zones} ${z}%{endfor} {
+%{if inputs.k8s_external.apex != "" ~}
+        apex ${inputs.k8s_external.apex}
+%{endif ~}
+%{if inputs.k8s_external.ttl != null ~}
+        ttl ${inputs.k8s_external.ttl}
+%{endif ~}
+%{if inputs.k8s_external.headless ~}
+        headless
+%{endif ~}
+%{if inputs.k8s_external.fallthrough ~}
+        fallthrough%{for z in inputs.k8s_external.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.kubernetes != null ~}
+    kubernetes%{for z in inputs.kubernetes.zones} ${z}%{endfor} {
+%{if inputs.kubernetes.endpoint != "" ~}
+        endpoint ${inputs.kubernetes.endpoint}
+%{endif ~}
+%{if inputs.kubernetes.tls_cert != "" ~}
+        tls ${inputs.kubernetes.tls_cert} ${inputs.kubernetes.tls_key} ${inputs.kubernetes.tls_cacert}
+%{endif ~}
+%{if inputs.kubernetes.kubeconfig != "" ~}
+        kubeconfig ${inputs.kubernetes.kubeconfig}${inputs.kubernetes.kubeconfig_context != "" ? " ${inputs.kubernetes.kubeconfig_context}" : ""}
+%{endif ~}
+%{if inputs.kubernetes.apiserver_qps != null ~}
+        apiserver_qps ${inputs.kubernetes.apiserver_qps}
+%{endif ~}
+%{if inputs.kubernetes.apiserver_burst != null ~}
+        apiserver_burst ${inputs.kubernetes.apiserver_burst}
+%{endif ~}
+%{if inputs.kubernetes.apiserver_max_inflight != null ~}
+        apiserver_max_inflight ${inputs.kubernetes.apiserver_max_inflight}
+%{endif ~}
+%{if [for ns in inputs.kubernetes.namespaces : ns] != [] ~}
+        namespaces%{for ns in inputs.kubernetes.namespaces} ${ns}%{endfor}
+%{endif ~}
+%{if inputs.kubernetes.namespace_labels != "" ~}
+        namespace_labels ${inputs.kubernetes.namespace_labels}
+%{endif ~}
+%{if inputs.kubernetes.labels != "" ~}
+        labels ${inputs.kubernetes.labels}
+%{endif ~}
+%{if inputs.kubernetes.pods != "" ~}
+        pods ${inputs.kubernetes.pods}
+%{endif ~}
+%{if inputs.kubernetes.endpoint_pod_names ~}
+        endpoint_pod_names
+%{endif ~}
+%{if inputs.kubernetes.ttl != null ~}
+        ttl ${inputs.kubernetes.ttl}
+%{endif ~}
+%{if inputs.kubernetes.noendpoints ~}
+        noendpoints
+%{endif ~}
+%{if inputs.kubernetes.fallthrough ~}
+        fallthrough%{for z in inputs.kubernetes.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if inputs.kubernetes.ignore_empty_service ~}
+        ignore empty_service
+%{endif ~}
+%{if [for z in inputs.kubernetes.multicluster_zones : z] != [] ~}
+        multicluster%{for z in inputs.kubernetes.multicluster_zones} ${z}%{endfor}
+%{endif ~}
+%{if inputs.kubernetes.zonal ~}
+        zonal
+%{endif ~}
+%{if inputs.kubernetes.startup_timeout != "" ~}
+        startup_timeout ${inputs.kubernetes.startup_timeout}
+%{endif ~}
+    }
+%{endif ~}
+%{for f in inputs.file ~}
+    file ${f.dbfile}%{for z in f.zones} ${z}%{endfor} {
+%{if f.reload != "" ~}
+        reload ${f.reload}
+%{endif ~}
+%{if f.fallthrough ~}
+        fallthrough%{for z in f.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{for a in inputs.auto ~}
+    auto%{for z in a.zones} ${z}%{endfor} {
+        directory ${a.directory}${a.regexp != "" ? " ${a.regexp}" : ""}${a.origin_template != "" ? " ${a.origin_template}" : ""}
+%{if a.reload != "" ~}
+        reload ${a.reload}
+%{endif ~}
+    }
+%{endfor ~}
+%{for sec in inputs.secondary ~}
+    secondary%{for z in sec.zones} ${z}%{endfor} {
+%{if [for addr in sec.transfer_from : addr] != [] ~}
+        transfer from%{for addr in sec.transfer_from} ${addr}%{endfor}
+%{endif ~}
+%{if sec.catalog ~}
+        catalog%{for mz in sec.catalog_member_zones} ${mz}%{endfor}
+%{endif ~}
+%{if sec.fallthrough ~}
+        fallthrough%{for z in sec.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{if inputs.etcd != null ~}
+    etcd%{for z in inputs.etcd.zones} ${z}%{endfor} {
+%{if inputs.etcd.fallthrough ~}
+        fallthrough%{for z in inputs.etcd.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if inputs.etcd.path != "" ~}
+        path ${inputs.etcd.path}
+%{endif ~}
+%{if [for ep in inputs.etcd.endpoints : ep] != [] ~}
+        endpoint%{for ep in inputs.etcd.endpoints} ${ep}%{endfor}
+%{endif ~}
+%{if inputs.etcd.username != "" ~}
+        credentials ${inputs.etcd.username} ${inputs.etcd.password}
+%{endif ~}
+%{if inputs.etcd.tls_cert != "" ~}
+        tls ${inputs.etcd.tls_cert} ${inputs.etcd.tls_key}${inputs.etcd.tls_cacert != "" ? " ${inputs.etcd.tls_cacert}" : ""}
+%{endif ~}
+%{if inputs.etcd.no_apex_fallback ~}
+        no_apex_fallback
+%{endif ~}
+%{if inputs.etcd.min_lease_ttl != "" ~}
+        min-lease-ttl ${inputs.etcd.min_lease_ttl}
+%{endif ~}
+%{if inputs.etcd.max_lease_ttl != "" ~}
+        max-lease-ttl ${inputs.etcd.max_lease_ttl}
+%{endif ~}
+    }
+%{endif ~}
+%{if features.loop || inputs.loop ~}
+    loop
+%{endif ~}
+%{for _, fwd in inputs.forwards ~}
+    forward ${fwd.from}%{for dst in fwd.to} ${dst}%{endfor} {
+%{if [for ex in fwd.except : ex] != [] ~}
+        except%{for ex in fwd.except} ${ex}%{endfor}
+%{endif ~}
+%{if fwd.force_tcp ~}
+        force_tcp
+%{endif ~}
+%{if fwd.prefer_udp ~}
+        prefer_udp
+%{endif ~}
+%{if fwd.expire != "" ~}
+        expire ${fwd.expire}
+%{endif ~}
+%{if fwd.max_fails != null ~}
+        max_fails ${fwd.max_fails}
+%{endif ~}
+%{if fwd.tls_cert != "" ~}
+        tls ${fwd.tls_cert} ${fwd.tls_key}${fwd.tls_ca != "" ? " ${fwd.tls_ca}" : ""}
+%{else ~}
+%{if fwd.tls_ca != "" ~}
+        tls ${fwd.tls_ca}
+%{endif ~}
+%{endif ~}
+%{if fwd.tls_servername != "" ~}
+        tls_servername ${fwd.tls_servername}
+%{endif ~}
+%{if fwd.policy != "" ~}
+        policy ${fwd.policy}
+%{endif ~}
+%{if fwd.health_check != "" ~}
+        health_check ${fwd.health_check}${fwd.health_check_domain != "" ? " domain ${fwd.health_check_domain}" : ""}
+%{endif ~}
+%{if fwd.dnstap ~}
+        dnstap
+%{endif ~}
+%{if fwd.max_concurrent != null ~}
+        max_concurrent ${fwd.max_concurrent}
+%{endif ~}
+%{if [for rc in fwd.next : rc] != [] ~}
+        next%{for rc in fwd.next} ${rc}%{endfor}
+%{endif ~}
+%{if fwd.failfast_all_unhealthy_upstreams ~}
+        failfast all_unhealthy_upstreams
+%{endif ~}
+%{for fo in fwd.failovers ~}
+        failover ${fo}
+%{endfor ~}
+    }
+%{endfor ~}
+%{if inputs.grpc != null ~}
+    grpc ${inputs.grpc.from}%{for dst in inputs.grpc.to} ${dst}%{endfor} {
+%{if [for ex in inputs.grpc.except : ex] != [] ~}
+        except%{for ex in inputs.grpc.except} ${ex}%{endfor}
+%{endif ~}
+%{if inputs.grpc.tls_cert != "" ~}
+        tls ${inputs.grpc.tls_cert} ${inputs.grpc.tls_key}${inputs.grpc.tls_ca != "" ? " ${inputs.grpc.tls_ca}" : ""}
+%{else ~}
+%{if inputs.grpc.tls_ca != "" ~}
+        tls ${inputs.grpc.tls_ca}
+%{endif ~}
+%{endif ~}
+%{if inputs.grpc.tls_servername != "" ~}
+        tls_servername ${inputs.grpc.tls_servername}
+%{endif ~}
+%{if inputs.grpc.policy != "" ~}
+        policy ${inputs.grpc.policy}
+%{endif ~}
+%{if inputs.grpc.fallthrough ~}
+        fallthrough%{for z in inputs.grpc.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if inputs.erratic != null ~}
+%{if inputs.erratic.enabled ~}
+    erratic {
+%{if inputs.erratic.drop != null ~}
+        drop ${inputs.erratic.drop}
+%{endif ~}
+%{if inputs.erratic.truncate != null ~}
+        truncate ${inputs.erratic.truncate}
+%{endif ~}
+%{if inputs.erratic.delay_amount != null ~}
+        delay ${inputs.erratic.delay_amount}${inputs.erratic.delay_duration != "" ? " ${inputs.erratic.delay_duration}" : ""}
+%{endif ~}
+    }
+%{endif ~}
+%{endif ~}
+%{if features.whoami || inputs.whoami ~}
+    whoami
+%{endif ~}
+%{for hook in inputs.on ~}
+    on ${hook.event} ${hook.command}
+%{endfor ~}
+%{for sg in inputs.sign ~}
+    sign ${sg.dbfile}%{for z in sg.zones} ${z}%{endfor} {
+        key ${sg.key_source}%{for k in sg.keys} ${k}%{endfor}
+%{if sg.directory != "" ~}
+        directory ${sg.directory}
+%{endif ~}
+    }
+%{endfor ~}
+%{if inputs.view != null ~}
+    view ${inputs.view.name} {
+%{for ex in inputs.view.exprs ~}
+        expr ${ex}
+%{endfor ~}
+    }
+%{endif ~}
+%{if inputs.nomad != null ~}
+    nomad%{for z in inputs.nomad.zones} ${z}%{endfor} {
+%{if [for addr in inputs.nomad.addresses : addr] != [] ~}
+        address%{for addr in inputs.nomad.addresses} ${addr}%{endfor}
+%{endif ~}
+%{if inputs.nomad.filter != "" ~}
+        filter ${inputs.nomad.filter}
+%{endif ~}
+%{if inputs.nomad.token != "" ~}
+        token ${inputs.nomad.token}
+%{endif ~}
+%{if inputs.nomad.ttl != null ~}
+        ttl ${inputs.nomad.ttl}
+%{endif ~}
+    }
+%{endif ~}
+}
+%{for _, srv in inputs.servers ~}
+
+%{for i, z in srv.zones}%{if i > 0} %{endif}${srv.transport != "" ? "${srv.transport}://" : ""}${z}%{endfor}${srv.port != null ? ":${srv.port}" : ""} {
+%{for imp in srv.imports ~}
+    import ${imp}
+%{endfor ~}
+%{if srv.root != "" ~}
+    root ${srv.root}
+%{endif ~}
+%{if srv.metadata != null ~}
+%{if srv.metadata.enabled ~}
+    metadata%{for z in srv.metadata.zones} ${z}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if srv.geoip != null ~}
+    geoip ${srv.geoip.db_file}%{if srv.geoip.edns_subnet} {
+        edns-subnet
+    }%{endif}
+%{endif ~}
+%{if srv.cancel != null ~}
+%{if srv.cancel.enabled ~}
+    cancel${srv.cancel.timeout != "" ? " ${srv.cancel.timeout}" : ""}
+%{endif ~}
+%{endif ~}
+%{if srv.proxyproto != null ~}
+    proxyproto {
+%{if [for x in srv.proxyproto.allow : x] != [] ~}
+        allow%{for cidr in srv.proxyproto.allow} ${cidr}%{endfor}
+%{endif ~}
+%{if srv.proxyproto.default != "" ~}
+        default ${srv.proxyproto.default}
+%{endif ~}
+%{if srv.proxyproto.udp_session_tracking_ttl != "" ~}
+        udp_session_tracking ${srv.proxyproto.udp_session_tracking_ttl}${srv.proxyproto.udp_session_tracking_max_sessions != null ? " ${srv.proxyproto.udp_session_tracking_max_sessions}" : ""}
+%{endif ~}
+%{if srv.proxyproto.tlv_metadata ~}
+        tlv_metadata
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.quic != null ~}
+    quic {
+%{if srv.quic.max_streams != null ~}
+        max_streams ${srv.quic.max_streams}
+%{endif ~}
+%{if srv.quic.worker_pool_size != null ~}
+        worker_pool_size ${srv.quic.worker_pool_size}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.grpc_server != null ~}
+    grpc_server {
+%{if srv.grpc_server.max_streams != null ~}
+        max_streams ${srv.grpc_server.max_streams}
+%{endif ~}
+%{if srv.grpc_server.max_connections != null ~}
+        max_connections ${srv.grpc_server.max_connections}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.https != null ~}
+    https {
+%{if srv.https.max_connections != null ~}
+        max_connections ${srv.https.max_connections}
+%{endif ~}
+%{if srv.https.path != "" ~}
+        path ${srv.https.path}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.https3 != null ~}
+    https3 {
+%{if srv.https3.max_streams != null ~}
+        max_streams ${srv.https3.max_streams}
+%{endif ~}
+%{if srv.https3.worker_pool_size != null ~}
+        worker_pool_size ${srv.https3.worker_pool_size}
+%{endif ~}
+%{if srv.https3.path != "" ~}
+        path ${srv.https3.path}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.timeouts != null ~}
+    timeouts {
+%{if srv.timeouts.read != "" ~}
+        read ${srv.timeouts.read}
+%{endif ~}
+%{if srv.timeouts.write != "" ~}
+        write ${srv.timeouts.write}
+%{endif ~}
+%{if srv.timeouts.idle != "" ~}
+        idle ${srv.timeouts.idle}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.multisocket != null ~}
+%{if srv.multisocket.enabled ~}
+    multisocket${srv.multisocket.num_sockets != null ? " ${srv.multisocket.num_sockets}" : ""}
+%{endif ~}
+%{endif ~}
+%{if srv.reload != null ~}
+%{if srv.reload.enabled ~}
+    reload${srv.reload.interval != "" ? " ${srv.reload.interval}" : ""}${srv.reload.jitter != "" ? " ${srv.reload.jitter}" : ""}
+%{endif ~}
+%{endif ~}
+%{if srv.nsid != null ~}
+%{if srv.nsid.enabled ~}
+    nsid${srv.nsid.data != "" ? " ${srv.nsid.data}" : ""}
+%{endif ~}
+%{endif ~}
+%{if srv.bufsize != null ~}
+    bufsize ${srv.bufsize}
+%{endif ~}
+%{if srv.bind != null ~}
+%{if [for x in srv.bind.except : x] != [] ~}
+    bind {
+%{if [for x in srv.bind.addresses : x] != [] ~}
+        addresses%{for a in srv.bind.addresses} ${a}%{endfor}
+%{endif ~}
+        except%{for e in srv.bind.except} ${e}%{endfor}
+    }
+%{else ~}
+    bind%{for a in srv.bind.addresses} ${a}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if srv.debug ~}
+    debug
+%{endif ~}
+%{if srv.trace != null ~}
+    trace${srv.trace.endpoint_type != "" ? " ${srv.trace.endpoint_type}" : ""}${srv.trace.endpoint != "" ? " ${srv.trace.endpoint}" : ""} {
+%{if srv.trace.every != null ~}
+        every ${srv.trace.every}
+%{endif ~}
+%{if srv.trace.service != "" ~}
+        service ${srv.trace.service}
+%{endif ~}
+%{if srv.trace.client_server ~}
+        client_server
+%{endif ~}
+%{if srv.trace.datadog_analytics_rate != null ~}
+        datadog_analytics_rate ${srv.trace.datadog_analytics_rate}
+%{endif ~}
+%{if srv.trace.zipkin_max_backlog_size != null ~}
+        zipkin_max_backlog_size ${srv.trace.zipkin_max_backlog_size}
+%{endif ~}
+%{if srv.trace.zipkin_max_batch_size != null ~}
+        zipkin_max_batch_size ${srv.trace.zipkin_max_batch_size}
+%{endif ~}
+%{if srv.trace.zipkin_max_batch_interval != "" ~}
+        zipkin_max_batch_interval ${srv.trace.zipkin_max_batch_interval}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.ready != null ~}
+%{if srv.ready.enabled ~}
+    ready${srv.ready.address != "" ? " ${srv.ready.address}" : ""}
+%{endif ~}
+%{endif ~}
+%{if srv.health != null ~}
+%{if srv.health.enabled ~}
+    health${srv.health.address != "" ? " ${srv.health.address}" : ""}%{if srv.health.lameduck != ""} {
+        lameduck ${srv.health.lameduck}
+    }%{endif}
+%{endif ~}
+%{endif ~}
+%{if srv.pprof != null ~}
+%{if srv.pprof.enabled ~}
+    pprof${srv.pprof.address != "" ? " ${srv.pprof.address}" : ""}%{if srv.pprof.block_rate != null} {
+        block ${srv.pprof.block_rate}
+    }%{endif}
+%{endif ~}
+%{endif ~}
+%{if srv.shed ~}
+    shed
+%{endif ~}
+%{if srv.prometheus != null ~}
+%{if srv.prometheus.enabled ~}
+    prometheus${srv.prometheus.address != "" ? " ${srv.prometheus.address}" : ""}
+%{endif ~}
+%{endif ~}
+%{if srv.errors != null ~}
+%{if srv.errors.enabled ~}
+%{if srv.errors.stacktrace || [for c in srv.errors.consolidations : c] != [] ~}
+    errors {
+%{for c in srv.errors.consolidations ~}
+        consolidate ${c.interval} "${c.pattern}"${c.show_first ? " show_first" : ""}
+%{endfor ~}
+%{if srv.errors.stacktrace ~}
+        stacktrace
+%{endif ~}
+    }
+%{else ~}
+    errors
+%{endif ~}
+%{endif ~}
+%{endif ~}
+%{if srv.log != null ~}
+%{if srv.log.enabled ~}
+%{if [for c in srv.log.classes : c] != [] ~}
+    log${srv.log.name != "" ? " ${srv.log.name}" : ""}${srv.log.format != "" ? " \"${srv.log.format}\"" : ""} {
+%{for cls in srv.log.classes ~}
+        class ${cls}
+%{endfor ~}
+    }
+%{else ~}
+    log${srv.log.name != "" ? " ${srv.log.name}" : ""}${srv.log.format != "" ? " \"${srv.log.format}\"" : ""}
+%{endif ~}
+%{endif ~}
+%{endif ~}
+%{for tap in srv.dnstap ~}
+    dnstap${tap.listen ? " listen" : ""} ${tap.socket}${tap.full ? " full" : ""}${tap.writebuffer != null ? " ${tap.writebuffer}" : ""}${tap.queue != null ? " ${tap.queue}" : ""} {
+%{if tap.identity != "" ~}
+        identity ${tap.identity}
+%{endif ~}
+%{if tap.version != "" ~}
+        version ${tap.version}
+%{endif ~}
+%{if tap.extra != "" ~}
+        extra "${tap.extra}"
+%{endif ~}
+%{if tap.tls_cert != "" ~}
+        tls ${tap.tls_cert} ${tap.tls_key}${tap.tls_ca != "" ? " ${tap.tls_ca}" : ""}
+%{endif ~}
+%{if tap.skipverify ~}
+        skipverify
+%{endif ~}
+    }
+%{endfor ~}
+%{if srv.local != null ~}
+%{if srv.local.enabled ~}
+%{if srv.local.localhost_prefix != "" ~}
+    local {
+        localhost_prefix ${srv.local.localhost_prefix}
+    }
+%{else ~}
+    local
+%{endif ~}
+%{endif ~}
+%{endif ~}
+%{if srv.dns64 != null ~}
+    dns64%{for z in srv.dns64.zones} ${z}%{endfor} {
+%{if srv.dns64.prefix != "" ~}
+        prefix ${srv.dns64.prefix}
+%{endif ~}
+%{if srv.dns64.translate_all ~}
+        translate_all
+%{endif ~}
+%{if srv.dns64.allow_ipv4 ~}
+        allow_ipv4
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.siit != null ~}
+    siit ${srv.siit.prefix}%{for z in srv.siit.zones} ${z}%{endfor}%{if srv.siit.translate_all} {
+        translate_all
+    }%{endif}
+%{endif ~}
+%{if srv.any ~}
+    any
+%{endif ~}
+%{if srv.chaos != null ~}
+%{if srv.chaos.enabled ~}
+    chaos${srv.chaos.version != "" ? " ${srv.chaos.version}" : ""}%{for a in srv.chaos.authors} ${a}%{endfor}
+%{endif ~}
+%{endif ~}
+%{if srv.loadbalance != null ~}
+    loadbalance ${srv.loadbalance.policy}${srv.loadbalance.weightfile != "" ? " ${srv.loadbalance.weightfile}" : ""} {
+%{if srv.loadbalance.reload != "" ~}
+        reload ${srv.loadbalance.reload}
+%{endif ~}
+%{if [for p in srv.loadbalance.prefer : p] != [] ~}
+        prefer%{for p in srv.loadbalance.prefer} ${p}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.tsig != null ~}
+    tsig%{for z in srv.tsig.zones} ${z}%{endfor} {
+%{for name, secret in srv.tsig.secrets ~}
+        secret ${name} ${secret}
+%{endfor ~}
+%{if srv.tsig.secrets_file != "" ~}
+        secrets ${srv.tsig.secrets_file}
+%{endif ~}
+%{if [for r in srv.tsig.require : r] != [] ~}
+        require%{for r in srv.tsig.require} ${r}%{endfor}
+%{endif ~}
+%{if [for op in srv.tsig.require_opcode : op] != [] ~}
+        require_opcode%{for op in srv.tsig.require_opcode} ${op}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{for rule in srv.rewrites ~}
+    rewrite ${rule}
+%{endfor ~}
+%{if srv.autopath != null ~}
+    autopath%{for z in srv.autopath.zones} ${z}%{endfor} ${srv.autopath.resolv_conf}
+%{endif ~}
+%{for acl_block in srv.acl ~}
+    acl%{for z in acl_block.zones} ${z}%{endfor} {
+%{for r in acl_block.rules ~}
+        ${r.action}${r.type != "" ? " type ${r.type}" : ""}%{if [for n in r.net : n] != []} net%{for n in r.net} ${n}%{endfor}%{endif}
+%{endfor ~}
+    }
+%{endfor ~}
+%{if srv.cache != null ~}
+    cache${srv.cache.ttl != null ? " ${srv.cache.ttl}" : ""}%{for z in srv.cache.zones} ${z}%{endfor} {
+%{if srv.cache.success_capacity != null ~}
+        success ${srv.cache.success_capacity}${srv.cache.success_ttl != null ? " ${srv.cache.success_ttl}" : ""}${srv.cache.success_min_ttl != null ? " ${srv.cache.success_min_ttl}" : ""}
+%{endif ~}
+%{if srv.cache.denial_capacity != null ~}
+        denial ${srv.cache.denial_capacity}${srv.cache.denial_ttl != null ? " ${srv.cache.denial_ttl}" : ""}${srv.cache.denial_min_ttl != null ? " ${srv.cache.denial_min_ttl}" : ""}
+%{endif ~}
+%{if srv.cache.prefetch_amount != null ~}
+        prefetch ${srv.cache.prefetch_amount}${srv.cache.prefetch_duration != "" ? " ${srv.cache.prefetch_duration}" : ""}${srv.cache.prefetch_percentage != null ? " ${srv.cache.prefetch_percentage}%" : ""}
+%{endif ~}
+%{if srv.cache.serve_stale_duration != "" ~}
+        serve_stale ${srv.cache.serve_stale_duration}${srv.cache.serve_stale_verify != "" ? " ${srv.cache.serve_stale_verify}" : ""}
+%{endif ~}
+%{if srv.cache.servfail != "" ~}
+        servfail ${srv.cache.servfail}
+%{endif ~}
+%{for z in srv.cache.disable_success_zones ~}
+        disable success ${z}
+%{endfor ~}
+%{for z in srv.cache.disable_denial_zones ~}
+        disable denial ${z}
+%{endfor ~}
+%{if srv.cache.keepttl ~}
+        keepttl
+%{endif ~}
+    }
+%{endif ~}
+%{for h in srv.header ~}
+    header${h.selector != "" ? " ${h.selector}" : ""} {
+%{for act in h.actions ~}
+        ${act}
+%{endfor ~}
+    }
+%{endfor ~}
+%{if srv.dnssec != null ~}
+    dnssec%{for z in srv.dnssec.zones} ${z}%{endfor} {
+        key ${srv.dnssec.key_source}%{for k in srv.dnssec.keys} ${k}%{endfor}
+%{if srv.dnssec.cache_capacity != null ~}
+        cache_capacity ${srv.dnssec.cache_capacity}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.tls != null ~}
+    tls ${srv.tls.cert} ${srv.tls.key}${srv.tls.ca != "" ? " ${srv.tls.ca}" : ""} {
+%{if srv.tls.client_auth != "" ~}
+        client_auth ${srv.tls.client_auth}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.minimal ~}
+    minimal
+%{endif ~}
+%{for tpl in srv.templates ~}
+    template ${tpl.class} ${tpl.type}%{for z in tpl.zones} ${z}%{endfor} {
+        match "${tpl.regex}"
+%{for ans in tpl.answer ~}
+        answer "${ans}"
+%{endfor ~}
+%{for add in tpl.additional ~}
+        additional "${add}"
+%{endfor ~}
+%{for auth in tpl.authority ~}
+        authority "${auth}"
+%{endfor ~}
+%{if tpl.rcode != "" ~}
+        rcode ${tpl.rcode}
+%{endif ~}
+%{if tpl.upstream != "" ~}
+        upstream ${tpl.upstream}
+%{endif ~}
+%{if tpl.fallthrough ~}
+        fallthrough%{for z in tpl.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{for tr in srv.transfer ~}
+    transfer%{for z in tr.zones} ${z}%{endfor} {
+        to%{for t in tr.to} ${t}%{endfor}
+%{if tr.source != "" ~}
+        source ${tr.source}
+%{endif ~}
+    }
+%{endfor ~}
+%{for dyn in srv.dynupdate ~}
+    dynupdate%{for z in dyn.zones} ${z}%{endfor} {
+%{if [for n in dyn.allow_net : n] != [] ~}
+        allow net%{for n in dyn.allow_net} ${n}%{endfor}
+%{endif ~}
+%{if [for k in dyn.allow_tsig : k] != [] ~}
+        allow tsig%{for k in dyn.allow_tsig} ${k}%{endfor}
+%{endif ~}
+%{for nm in dyn.allow_name ~}
+        allow name ${nm.pattern}%{for t in nm.types} ${t}%{endfor}
+%{endfor ~}
+%{for sd in dyn.allow_subdomain ~}
+        allow subdomain ${sd.parent}%{for t in sd.types} ${t}%{endfor}
+%{endfor ~}
+%{for sf in dyn.allow_self ~}
+        allow self ${sf.subtree}%{for t in sf.types} ${t}%{endfor}
+%{endfor ~}
+%{if [for n in dyn.block_net : n] != [] ~}
+        block net%{for n in dyn.block_net} ${n}%{endfor}
+%{endif ~}
+%{for nm in dyn.block_name ~}
+        block name ${nm.pattern}%{for t in nm.types} ${t}%{endfor}
+%{endfor ~}
+%{for sd in dyn.block_subdomain ~}
+        block subdomain ${sd.parent}%{for t in sd.types} ${t}%{endfor}
+%{endfor ~}
+%{if dyn.dry_run ~}
+        dry_run
+%{endif ~}
+%{if dyn.audit ~}
+        audit
+%{endif ~}
+    }
+%{endfor ~}
+%{if srv.hosts != null ~}
+    hosts${srv.hosts.file != "" ? " ${srv.hosts.file}" : ""}%{for z in srv.hosts.zones} ${z}%{endfor} {
+%{for ip, names in srv.hosts.inline ~}
+        ${ip}%{for n in names} ${n}%{endfor}
+%{endfor ~}
+%{if srv.hosts.ttl != null ~}
+        ttl ${srv.hosts.ttl}
+%{endif ~}
+%{if srv.hosts.reload != "" ~}
+        reload ${srv.hosts.reload}
+%{endif ~}
+%{if srv.hosts.no_reverse ~}
+        no_reverse
+%{endif ~}
+%{if srv.hosts.fallthrough ~}
+        fallthrough%{for z in srv.hosts.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.route53 != null ~}
+    route53%{for z in srv.route53.zones} ${z}%{endfor} {
+%{if srv.route53.aws_access_key_id != "" ~}
+        aws_access_key ${srv.route53.aws_access_key_id} ${srv.route53.aws_secret_access_key}
+%{endif ~}
+%{if srv.route53.aws_endpoint != "" ~}
+        aws_endpoint ${srv.route53.aws_endpoint}
+%{endif ~}
+%{if srv.route53.credentials_profile != "" ~}
+        credentials ${srv.route53.credentials_profile}${srv.route53.credentials_file != "" ? " ${srv.route53.credentials_file}" : ""}
+%{endif ~}
+%{if srv.route53.fallthrough ~}
+        fallthrough%{for z in srv.route53.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if srv.route53.refresh != "" ~}
+        refresh ${srv.route53.refresh}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.azure != null ~}
+    azure%{for z in srv.azure.zones} ${z}%{endfor} {
+        tenant ${srv.azure.tenant}
+        client ${srv.azure.client}
+        secret ${srv.azure.secret}
+        subscription ${srv.azure.subscription}
+%{if srv.azure.environment != "" ~}
+        environment ${srv.azure.environment}
+%{endif ~}
+%{if srv.azure.access != "" ~}
+        access ${srv.azure.access}
+%{endif ~}
+%{if srv.azure.fallthrough ~}
+        fallthrough%{for z in srv.azure.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if srv.azure.refresh != "" ~}
+        refresh ${srv.azure.refresh}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.clouddns != null ~}
+    clouddns%{for z in srv.clouddns.zones} ${z}%{endfor} {
+%{if srv.clouddns.credentials != "" ~}
+        credentials ${srv.clouddns.credentials}
+%{endif ~}
+%{if srv.clouddns.endpoint != "" ~}
+        endpoint ${srv.clouddns.endpoint}
+%{endif ~}
+%{if srv.clouddns.fallthrough ~}
+        fallthrough%{for z in srv.clouddns.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if srv.clouddns.refresh != "" ~}
+        refresh ${srv.clouddns.refresh}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.k8s_external != null ~}
+    k8s_external%{for z in srv.k8s_external.zones} ${z}%{endfor} {
+%{if srv.k8s_external.apex != "" ~}
+        apex ${srv.k8s_external.apex}
+%{endif ~}
+%{if srv.k8s_external.ttl != null ~}
+        ttl ${srv.k8s_external.ttl}
+%{endif ~}
+%{if srv.k8s_external.headless ~}
+        headless
+%{endif ~}
+%{if srv.k8s_external.fallthrough ~}
+        fallthrough%{for z in srv.k8s_external.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.kubernetes != null ~}
+    kubernetes%{for z in srv.kubernetes.zones} ${z}%{endfor} {
+%{if srv.kubernetes.endpoint != "" ~}
+        endpoint ${srv.kubernetes.endpoint}
+%{endif ~}
+%{if srv.kubernetes.tls_cert != "" ~}
+        tls ${srv.kubernetes.tls_cert} ${srv.kubernetes.tls_key} ${srv.kubernetes.tls_cacert}
+%{endif ~}
+%{if srv.kubernetes.kubeconfig != "" ~}
+        kubeconfig ${srv.kubernetes.kubeconfig}${srv.kubernetes.kubeconfig_context != "" ? " ${srv.kubernetes.kubeconfig_context}" : ""}
+%{endif ~}
+%{if srv.kubernetes.apiserver_qps != null ~}
+        apiserver_qps ${srv.kubernetes.apiserver_qps}
+%{endif ~}
+%{if srv.kubernetes.apiserver_burst != null ~}
+        apiserver_burst ${srv.kubernetes.apiserver_burst}
+%{endif ~}
+%{if srv.kubernetes.apiserver_max_inflight != null ~}
+        apiserver_max_inflight ${srv.kubernetes.apiserver_max_inflight}
+%{endif ~}
+%{if [for ns in srv.kubernetes.namespaces : ns] != [] ~}
+        namespaces%{for ns in srv.kubernetes.namespaces} ${ns}%{endfor}
+%{endif ~}
+%{if srv.kubernetes.namespace_labels != "" ~}
+        namespace_labels ${srv.kubernetes.namespace_labels}
+%{endif ~}
+%{if srv.kubernetes.labels != "" ~}
+        labels ${srv.kubernetes.labels}
+%{endif ~}
+%{if srv.kubernetes.pods != "" ~}
+        pods ${srv.kubernetes.pods}
+%{endif ~}
+%{if srv.kubernetes.endpoint_pod_names ~}
+        endpoint_pod_names
+%{endif ~}
+%{if srv.kubernetes.ttl != null ~}
+        ttl ${srv.kubernetes.ttl}
+%{endif ~}
+%{if srv.kubernetes.noendpoints ~}
+        noendpoints
+%{endif ~}
+%{if srv.kubernetes.fallthrough ~}
+        fallthrough%{for z in srv.kubernetes.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if srv.kubernetes.ignore_empty_service ~}
+        ignore empty_service
+%{endif ~}
+%{if [for z in srv.kubernetes.multicluster_zones : z] != [] ~}
+        multicluster%{for z in srv.kubernetes.multicluster_zones} ${z}%{endfor}
+%{endif ~}
+%{if srv.kubernetes.zonal ~}
+        zonal
+%{endif ~}
+%{if srv.kubernetes.startup_timeout != "" ~}
+        startup_timeout ${srv.kubernetes.startup_timeout}
+%{endif ~}
+    }
+%{endif ~}
+%{for f in srv.file ~}
+    file ${f.dbfile}%{for z in f.zones} ${z}%{endfor} {
+%{if f.reload != "" ~}
+        reload ${f.reload}
+%{endif ~}
+%{if f.fallthrough ~}
+        fallthrough%{for z in f.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{for a in srv.auto ~}
+    auto%{for z in a.zones} ${z}%{endfor} {
+        directory ${a.directory}${a.regexp != "" ? " ${a.regexp}" : ""}${a.origin_template != "" ? " ${a.origin_template}" : ""}
+%{if a.reload != "" ~}
+        reload ${a.reload}
+%{endif ~}
+    }
+%{endfor ~}
+%{for sec in srv.secondary ~}
+    secondary%{for z in sec.zones} ${z}%{endfor} {
+%{if [for addr in sec.transfer_from : addr] != [] ~}
+        transfer from%{for addr in sec.transfer_from} ${addr}%{endfor}
+%{endif ~}
+%{if sec.catalog ~}
+        catalog%{for mz in sec.catalog_member_zones} ${mz}%{endfor}
+%{endif ~}
+%{if sec.fallthrough ~}
+        fallthrough%{for z in sec.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endfor ~}
+%{if srv.etcd != null ~}
+    etcd%{for z in srv.etcd.zones} ${z}%{endfor} {
+%{if srv.etcd.fallthrough ~}
+        fallthrough%{for z in srv.etcd.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+%{if srv.etcd.path != "" ~}
+        path ${srv.etcd.path}
+%{endif ~}
+%{if [for ep in srv.etcd.endpoints : ep] != [] ~}
+        endpoint%{for ep in srv.etcd.endpoints} ${ep}%{endfor}
+%{endif ~}
+%{if srv.etcd.username != "" ~}
+        credentials ${srv.etcd.username} ${srv.etcd.password}
+%{endif ~}
+%{if srv.etcd.tls_cert != "" ~}
+        tls ${srv.etcd.tls_cert} ${srv.etcd.tls_key}${srv.etcd.tls_cacert != "" ? " ${srv.etcd.tls_cacert}" : ""}
+%{endif ~}
+%{if srv.etcd.no_apex_fallback ~}
+        no_apex_fallback
+%{endif ~}
+%{if srv.etcd.min_lease_ttl != "" ~}
+        min-lease-ttl ${srv.etcd.min_lease_ttl}
+%{endif ~}
+%{if srv.etcd.max_lease_ttl != "" ~}
+        max-lease-ttl ${srv.etcd.max_lease_ttl}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.loop ~}
+    loop
+%{endif ~}
+%{for fwd in srv.forwards ~}
+    forward ${fwd.from}%{for dst in fwd.to} ${dst}%{endfor} {
+%{if [for ex in fwd.except : ex] != [] ~}
+        except%{for ex in fwd.except} ${ex}%{endfor}
+%{endif ~}
+%{if fwd.force_tcp ~}
+        force_tcp
+%{endif ~}
+%{if fwd.prefer_udp ~}
+        prefer_udp
+%{endif ~}
+%{if fwd.expire != "" ~}
+        expire ${fwd.expire}
+%{endif ~}
+%{if fwd.max_fails != null ~}
+        max_fails ${fwd.max_fails}
+%{endif ~}
+%{if fwd.tls_cert != "" ~}
+        tls ${fwd.tls_cert} ${fwd.tls_key}${fwd.tls_ca != "" ? " ${fwd.tls_ca}" : ""}
+%{else ~}
+%{if fwd.tls_ca != "" ~}
+        tls ${fwd.tls_ca}
+%{endif ~}
+%{endif ~}
+%{if fwd.tls_servername != "" ~}
+        tls_servername ${fwd.tls_servername}
+%{endif ~}
+%{if fwd.policy != "" ~}
+        policy ${fwd.policy}
+%{endif ~}
+%{if fwd.health_check != "" ~}
+        health_check ${fwd.health_check}${fwd.health_check_domain != "" ? " domain ${fwd.health_check_domain}" : ""}
+%{endif ~}
+%{if fwd.dnstap ~}
+        dnstap
+%{endif ~}
+%{if fwd.max_concurrent != null ~}
+        max_concurrent ${fwd.max_concurrent}
+%{endif ~}
+%{if [for rc in fwd.next : rc] != [] ~}
+        next%{for rc in fwd.next} ${rc}%{endfor}
+%{endif ~}
+%{if fwd.failfast_all_unhealthy_upstreams ~}
+        failfast all_unhealthy_upstreams
+%{endif ~}
+%{for fo in fwd.failovers ~}
+        failover ${fo}
+%{endfor ~}
+    }
+%{endfor ~}
+%{if srv.grpc != null ~}
+    grpc ${srv.grpc.from}%{for dst in srv.grpc.to} ${dst}%{endfor} {
+%{if [for ex in srv.grpc.except : ex] != [] ~}
+        except%{for ex in srv.grpc.except} ${ex}%{endfor}
+%{endif ~}
+%{if srv.grpc.tls_cert != "" ~}
+        tls ${srv.grpc.tls_cert} ${srv.grpc.tls_key}${srv.grpc.tls_ca != "" ? " ${srv.grpc.tls_ca}" : ""}
+%{else ~}
+%{if srv.grpc.tls_ca != "" ~}
+        tls ${srv.grpc.tls_ca}
+%{endif ~}
+%{endif ~}
+%{if srv.grpc.tls_servername != "" ~}
+        tls_servername ${srv.grpc.tls_servername}
+%{endif ~}
+%{if srv.grpc.policy != "" ~}
+        policy ${srv.grpc.policy}
+%{endif ~}
+%{if srv.grpc.fallthrough ~}
+        fallthrough%{for z in srv.grpc.fallthrough_zones} ${z}%{endfor}
+%{endif ~}
+    }
+%{endif ~}
+%{if srv.erratic != null ~}
+%{if srv.erratic.enabled ~}
+    erratic {
+%{if srv.erratic.drop != null ~}
+        drop ${srv.erratic.drop}
+%{endif ~}
+%{if srv.erratic.truncate != null ~}
+        truncate ${srv.erratic.truncate}
+%{endif ~}
+%{if srv.erratic.delay_amount != null ~}
+        delay ${srv.erratic.delay_amount}${srv.erratic.delay_duration != "" ? " ${srv.erratic.delay_duration}" : ""}
+%{endif ~}
+    }
+%{endif ~}
+%{endif ~}
+%{if srv.whoami ~}
+    whoami
+%{endif ~}
+%{for hook in srv.on ~}
+    on ${hook.event} ${hook.command}
+%{endfor ~}
+%{for sg in srv.sign ~}
+    sign ${sg.dbfile}%{for z in sg.zones} ${z}%{endfor} {
+        key ${sg.key_source}%{for k in sg.keys} ${k}%{endfor}
+%{if sg.directory != "" ~}
+        directory ${sg.directory}
+%{endif ~}
+    }
+%{endfor ~}
+%{if srv.view != null ~}
+    view ${srv.view.name} {
+%{for ex in srv.view.exprs ~}
+        expr ${ex}
+%{endfor ~}
+    }
+%{endif ~}
+%{if srv.nomad != null ~}
+    nomad%{for z in srv.nomad.zones} ${z}%{endfor} {
+%{if [for addr in srv.nomad.addresses : addr] != [] ~}
+        address%{for addr in srv.nomad.addresses} ${addr}%{endfor}
+%{endif ~}
+%{if srv.nomad.filter != "" ~}
+        filter ${srv.nomad.filter}
+%{endif ~}
+%{if srv.nomad.token != "" ~}
+        token ${srv.nomad.token}
+%{endif ~}
+%{if srv.nomad.ttl != null ~}
+        ttl ${srv.nomad.ttl}
+%{endif ~}
+    }
+%{endif ~}
+}
+%{endfor ~}
+EOF
+            }
+
+            build {
+                cmd = ["go", "build", "-o", "${fs::bin()}/coredns", "."]
+            }
+
+            arguments {
+                options {
+                    prefix    = "-"
+                    separator = "="
+                }
+                values = {
+                    main = {
+                        conf         = self.file.corefile.path
+                        "dns.port"   = self.vars.port
+                        "log-format" = inputs.log_format
+                        pidfile      = inputs.pidfile
+                        quiet        = inputs.quiet
+                    }
+                }
+            }
+
+            runtime {
+                cmd = ["${fs::bin()}/coredns", tpl::render::flags("main")]
+            }
+
+            readiness {
+                http {
+                    port = inputs.ready_port
+                    path = "/ready"
+                }
+                period            = "200ms"
+                failure_threshold = 50
+            }
+        }
+    }
+}
