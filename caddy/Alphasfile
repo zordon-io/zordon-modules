@@ -80,6 +80,11 @@ package "caddy" {
             type        = string
             value       = component.caddy.service.go.caddy.file.caddyfile.path
         }
+        vhosts_dir = {
+            description = "Directory whose *.caddy files are imported at the top level of the Caddyfile as virtual host blocks."
+            type        = string
+            value       = component.caddy.service.go.caddy.vars.vhosts_dir
+        }
         ready = {
             description = "Readiness barrier reference for the Caddy service."
             type        = string
@@ -979,9 +984,10 @@ package "caddy" {
             }
 
             vars = {
-                http  = inputs.http_port != null ? inputs.http_port : net::pickport()
-                https = inputs.https_port != null ? inputs.https_port : net::pickport()
-                admin = inputs.admin_port != null ? inputs.admin_port : net::pickport()
+                http       = inputs.http_port != null ? inputs.http_port : net::pickport()
+                https      = inputs.https_port != null ? inputs.https_port : net::pickport()
+                admin      = inputs.admin_port != null ? inputs.admin_port : net::pickport()
+                vhosts_dir = "${fs::etc()}/vhosts"
             }
 
             print = "http://127.0.0.1:${self.vars.http}/  (caddy)%{for name, s in inputs.sites} ${features.tls || inputs.local_certs || s.tls != null ? "https" : "http"}://${s.host != "" ? s.host : "${name}.${inputs.domain}"}:${features.tls || inputs.local_certs || s.tls != null ? self.vars.https : self.vars.http}/%{endfor}"
@@ -1056,14 +1062,18 @@ package "caddy" {
     email ${inputs.email}
 %{endif ~}
 %{if features.admin || (inputs.admin != null && inputs.admin.enabled) ~}
+%{if inputs.admin != null && (inputs.admin.enforce_origin || [for o in inputs.admin.origins : o] != []) ~}
     admin ${inputs.admin != null && inputs.admin.listen != "" ? inputs.admin.listen : "127.0.0.1:${self.vars.admin}"} {
-%{if inputs.admin != null && inputs.admin.enforce_origin ~}
+%{if inputs.admin.enforce_origin ~}
         enforce_origin
 %{endif ~}
-%{if inputs.admin != null && [for o in inputs.admin.origins : o] != [] ~}
+%{if [for o in inputs.admin.origins : o] != [] ~}
         origins%{for o in inputs.admin.origins} ${o}%{endfor}
 %{endif ~}
     }
+%{else ~}
+    admin ${inputs.admin != null && inputs.admin.listen != "" ? inputs.admin.listen : "127.0.0.1:${self.vars.admin}"}
+%{endif ~}
 %{else ~}
     admin off
 %{endif ~}
@@ -1348,7 +1358,9 @@ package "caddy" {
 %{endfor ~}
 
 :${self.vars.http} {
+%{if inputs.default_bind == null ~}
     bind 127.0.0.1
+%{endif ~}
     respond ${inputs.health_path} "ok" 200
 %{if features.metrics || (inputs.metrics != null && inputs.metrics.enabled) ~}
     metrics ${inputs.metrics != null ? inputs.metrics.path : "/metrics"}%{if inputs.metrics != null && inputs.metrics.disable_openmetrics} {
@@ -2363,11 +2375,18 @@ ${features.tls || inputs.local_certs || site.tls != null ? "https://${site.host 
 %{endfor ~}
 }
 %{endfor ~}
+
+import ${self.vars.vhosts_dir}/*.caddy
 EOF
             }
 
             file "site-base" {
                 path = "${fs::etc()}/sites/10-base.caddy"
+                body = "# managed by zordon caddy package\n"
+            }
+
+            file "vhost-base" {
+                path = "${self.vars.vhosts_dir}/10-base.caddy"
                 body = "# managed by zordon caddy package\n"
             }
 
